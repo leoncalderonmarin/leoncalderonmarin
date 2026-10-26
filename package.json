@@ -1,1 +1,11 @@
-<html><head></head><body style="overflow-wrap: break-word; -webkit-nbsp-mode: space; line-break: after-white-space;"><div>{</div><div>&nbsp; "name": "gps-tracker-demo-taos",</div><div>&nbsp; "version": "1.0.0",</div><div>&nbsp; "main": "server.js",</div><div>&nbsp; "scripts": {</div><div>&nbsp; &nbsp; "start": "node server.js"</div><div>&nbsp; },</div><div>&nbsp; "dependencies": {</div><div>&nbsp; &nbsp; "express": "^4.18.2"</div><div>&nbsp; }</div><div>}</div><div><br></div></body></html>
+{
+  "name": "gps-tracker-demo-taos",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
