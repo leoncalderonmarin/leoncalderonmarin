@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Almacén de la última posición en tiempo real
 let ultimaPosicion = {
     deviceId: 'Esperando señal de Traccar...',
     lat: '0.0000',
@@ -18,6 +19,7 @@ let ultimaPosicion = {
     timestamp: 'Sin transmisión'
 };
 
+// Interfaz web con cliente WebSocket en tiempo real
 app.get('/', (req, res) => {
     res.send(`
         <html>
@@ -61,12 +63,11 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Endpoint optimizado para Traccar Client y peticiones HTTP
+// Endpoint universal optimizado para Traccar Client y peticiones HTTP
 app.all('/api/gps', (req, res) => {
-    // Traccar manda los datos por parámetros GET (Query) o POST
-    const deviceId = req.query.id || req.body.id || req.body.deviceId || 'Desconocido';
+    const deviceId = req.query.id || req.query.device || req.body.id || req.body.deviceId || 'Unidad-Móvil';
     const lat = req.query.lat || req.body.lat;
-    const lng = req.query.lon || req.query.lng || req.body.lng;
+    const lng = req.query.lon || req.query.lng || req.body.lon || req.body.lng;
     
     if (lat !== undefined && lng !== undefined) {
         ultimaPosicion = {
@@ -76,7 +77,7 @@ app.all('/api/gps', (req, res) => {
             timestamp: new Date().toLocaleTimeString()
         };
 
-        console.log(`[TRACCAR EN VIVO] Dispositivo: ${deviceId} | Lat: ${lat}, Lng: ${lng}`);
+        console.log(`[TRACCAR GPS] Unidad: ${deviceId} | Lat: ${lat}, Lng: ${lng}`);
 
         // Enviar por WebSocket a la pantalla al instante
         wss.clients.forEach(client => {
