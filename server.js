@@ -9,16 +9,15 @@ const wss = new WebSocket.Server({ server });
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Almacén de la última posición
 let ultimaPosicion = {
-    deviceId: 'Esperando unidad...',
+    deviceId: 'Esperando señal de Traccar...',
     lat: '0.0000',
     lng: '0.0000',
     timestamp: 'Sin transmisión'
 };
 
-// Interfaz web con cliente WebSocket integrado para tiempo real
 app.get('/', (req, res) => {
     res.send(`
         <html>
@@ -31,14 +30,14 @@ app.get('/', (req, res) => {
                     .card { background: white; padding: 25px; margin: 20px auto; width: 70%; max-width: 500px; border-radius: 8px; box-shadow: 0px 4px 10px rgba(0,0,0,0.1); text-align: left; }
                     .card h3 { margin-top: 0; color: #28a745; border-bottom: 2px solid #f4f4f9; padding-bottom: 8px; }
                     .data-row { margin: 12px 0; font-size: 16px; }
-                    .live-dot { height: 12px; width: 12px; background-color: #28a745; border-radius: 50%; display: inline-block; margin-right: 5px; animation: pulse 1.5px infinite; }
+                    .live-dot { height: 12px; width: 12px; background-color: #28a745; border-radius: 50%; display: inline-block; margin-right: 5px; animation: pulse 1.5s infinite; }
                 </style>
             </head>
             <body>
                 <h1>Monitoreo Satelital - TAOS / Best Buy</h1>
-                <p class="status"><span class="live-dot"></span> Conexión en Tiempo Real Activa</p>
+                <p class="status"><span class="live-dot"></span> Transmisión en Vivo Activa</p>
                 <div class="card">
-                    <h3>Posición Actualizada:</h3>
+                    <h3>Posición Actual de la Unidad:</h3>
                     <div class="data-row"><strong>Dispositivo:</strong> <span id="dev">${ultimaPosicion.deviceId}</span></div>
                     <div class="data-row"><strong>Latitud:</strong> <span id="lat">${ultimaPosicion.lat}</span></div>
                     <div class="data-row"><strong>Longitud:</strong> <span id="lng">${ultimaPosicion.lng}</span></div>
@@ -46,7 +45,6 @@ app.get('/', (req, res) => {
                 </div>
 
                 <script>
-                    // Conexión WebSocket automática al servidor
                     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                     const ws = new WebSocket(protocol + '//' + window.location.host);
 
@@ -63,33 +61,36 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Endpoint POST para recibir los datos del GPS en movimiento
-app.post('/api/gps', (req, res) => {
-    const { deviceId, lat, lng, timestamp } = req.body;
+// Endpoint optimizado para Traccar Client y peticiones HTTP
+app.all('/api/gps', (req, res) => {
+    // Traccar manda los datos por parámetros GET (Query) o POST
+    const deviceId = req.query.id || req.body.id || req.body.deviceId || 'Desconocido';
+    const lat = req.query.lat || req.body.lat;
+    const lng = req.query.lon || req.query.lng || req.body.lng;
     
     if (lat !== undefined && lng !== undefined) {
         ultimaPosicion = {
-            deviceId: deviceId || 'Unidad TAOS-01',
+            deviceId,
             lat,
             lng,
-            timestamp: timestamp || new Date().toLocaleTimeString()
+            timestamp: new Date().toLocaleTimeString()
         };
 
-        console.log(`[GPS EN VIVO] ${ultimaPosicion.deviceId} -> Lat: ${lat}, Lng: ${lng}`);
+        console.log(`[TRACCAR EN VIVO] Dispositivo: ${deviceId} | Lat: ${lat}, Lng: ${lng}`);
 
-        // Transmitir la nueva posición a todos los navegadores conectados al instante
+        // Enviar por WebSocket a la pantalla al instante
         wss.clients.forEach(client => {
             if (client.readyState === WebSocket.OPEN) {
                 client.send(JSON.stringify(ultimaPosicion));
             }
         });
 
-        return res.status(200).json({ status: 'success', message: 'Posición transmitida en tiempo real' });
+        return res.status(200).send('OK');
     }
     
-    res.status(400).json({ status: 'error', message: 'Coordenadas incompletas' });
+    res.status(400).send('Faltan parámetros de coordenadas');
 });
 
 server.listen(PORT, () => {
-    console.log(`Servidor con WebSockets operando en el puerto ${PORT}`);
+    console.log(`Servidor operando en el puerto ${PORT}`);
 });
