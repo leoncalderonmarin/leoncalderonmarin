@@ -63,21 +63,30 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Endpoint universal optimizado para Traccar Client y peticiones HTTP
+// Endpoint universal optimizado para Traccar Client, zona horaria de México y WebSockets
 app.all('/api/gps', (req, res) => {
     const deviceId = req.query.id || req.query.device || req.body.id || req.body.deviceId || 'Unidad-Móvil';
     const lat = req.query.lat || req.body.lat;
     const lng = req.query.lon || req.query.lng || req.body.lon || req.body.lng;
     
     if (lat !== undefined && lng !== undefined) {
+        // Cálculo exacto de la hora local de México
+        const horaMexico = new Date().toLocaleTimeString('es-MX', {
+            timeZone: 'America/Mexico_City',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: true
+        });
+
         ultimaPosicion = {
             deviceId,
             lat,
             lng,
-            timestamp: new Date().toLocaleTimeString()
+            timestamp: horaMexico
         };
 
-        console.log(`[TRACCAR GPS] Unidad: ${deviceId} | Lat: ${lat}, Lng: ${lng}`);
+        console.log(`[TRACCAR GPS] Unidad: ${deviceId} | Lat: ${lat}, Lng: ${lng} | Hora: ${horaMexico}`);
 
         // Enviar por WebSocket a la pantalla al instante
         wss.clients.forEach(client => {
