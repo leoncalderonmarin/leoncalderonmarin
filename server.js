@@ -1,1 +1,35 @@
-<html><head></head><body style="overflow-wrap: break-word; -webkit-nbsp-mode: space; line-break: after-white-space;"><div>const express = require('express');</div><div>const app = express();</div><div>const PORT = process.env.PORT || 3000;</div><div><br></div><div>app.use(express.json());</div><div><br></div><div>// Ruta de prueba para verificar que el servidor y el mapa responden</div><div>app.get('/', (req, res) =&gt; {</div><div>&nbsp; &nbsp; res.send(`</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &lt;html&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &lt;head&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &lt;title&gt;Prueba GPS - TAOS&lt;/title&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &lt;style&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background-color: #f4f4f9; }</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; h1 { color: #333; }</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; .status { font-size: 20px; color: green; font-weight: bold; }</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &lt;/style&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &lt;/head&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &lt;body&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &lt;h1&gt;Sistema de Rastreo GPS - Servidor Activo&lt;/h1&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &lt;p class="status"&gt;Conexión establecida correctamente con el servidor virtual.&lt;/p&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &lt;p&gt;Esperando coordenadas de la unidad y conexión con el mapa...&lt;/p&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &lt;/body&gt;</div><div>&nbsp; &nbsp; &nbsp; &nbsp; &lt;/html&gt;</div><div>&nbsp; &nbsp; `);</div><div>});</div><div><br></div><div>// Endpoint para recibir las coordenadas de prueba del GPS</div><div>app.post('/api/gps', (req, res) =&gt; {</div><div>&nbsp; &nbsp; const { deviceId, lat, lng, timestamp } = req.body;</div><div>&nbsp; &nbsp; console.log(`[GPS RECIBIDO] Dispositivo: ${deviceId} | Lat: ${lat} | Lng: ${lng} | Hora: ${timestamp}`);</div><div>&nbsp; &nbsp; res.status(200).json({ status: 'success', message: 'Coordenada registrada correctamente' });</div><div>});</div><div><br></div><div>app.listen(PORT, () =&gt; {</div><div>&nbsp; &nbsp; console.log(`Servidor de prueba corriendo en el puerto ${PORT}`);</div><div>});</div><div><br></div></body></html>
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+
+app.get('/', (req, res) => {
+    res.send(`
+        <html>
+            <head>
+                <title>Prueba GPS - TAOS</title>
+                <style>
+                    body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background-color: #f4f4f9; }
+                    h1 { color: #333; }
+                    .status { font-size: 20px; color: green; font-weight: bold; }
+                </style>
+            </head>
+            <body>
+                <h1>Sistema de Rastreo GPS - Servidor Activo</h1>
+                <p class="status">Conexión establecida correctamente con el servidor virtual.</p>
+                <p>Esperando coordenadas de la unidad y conexión con el mapa...</p>
+            </body>
+        </html>
+    `);
+});
+
+app.post('/api/gps', (req, res) => {
+    const { deviceId, lat, lng, timestamp } = req.body;
+    console.log(`[GPS RECIBIDO] Dispositivo: ${deviceId} | Lat: ${lat} | Lng: ${lng} | Hora: ${timestamp}`);
+    res.status(200).json({ status: 'success', message: 'Coordenada registrada correctamente' });
+});
+
+app.listen(PORT, () => {
+    console.log(`Servidor de prueba corriendo en el puerto ${PORT}`);
+});
