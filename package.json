@@ -1,6 +1,12 @@
 {
-  "deviceId": "Unidad-Movil-01",
-  "lat": 19.3520,
-  "lng": -99.1610,
-  "timestamp": "12:05:30 PM"
+  "name": "gps-tracker-demo-taos",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0"
+  }
 }
