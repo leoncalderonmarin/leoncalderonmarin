@@ -8,13 +8,23 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
+// Evita que un error no capturado tumbe todo el servicio (GPS, panel y cron)
+process.on('unhandledRejection', (reason) => {
+    console.error('⚠️ Promesa rechazada sin manejar:', reason);
+});
+
 // Memoria temporal para guardar posiciones GPS y el último reporte generado
 let unidadesGPS = {};
 let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
+let whatsappListo = false;
 
-// --- CLIENTE DE WHATSAPP CON DETECCIÓN AUTOMÁTICA DE PUPPETEER ---
+// --- CLIENTE DE WHATSAPP ---
+// La sesión se guarda en WWEBJS_DATA_PATH (por ejemplo, un disco persistente de Render).
+// Si la variable no existe, usa la carpeta local por defecto.
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({
+        dataPath: process.env.WWEBJS_DATA_PATH || './.wwebjs_auth'
+    }),
     puppeteer: {
         headless: true,
         args: [
@@ -30,11 +40,27 @@ const client = new Client({
 });
 
 client.on('qr', (qr) => {
+    whatsappListo = false;
     console.log('📱 ESCANEA ESTE CÓDIGO QR con el WhatsApp de TAOS:');
     qrcode.generate(qr, { small: true });
 });
 
+client.on('authenticated', () => {
+    console.log('🔐 Autenticación de WhatsApp correcta.');
+});
+
+client.on('auth_failure', (msg) => {
+    whatsappListo = false;
+    console.error('❌ Falló la autenticación de WhatsApp:', msg);
+});
+
+client.on('disconnected', (reason) => {
+    whatsappListo = false;
+    console.error('⚠️ WhatsApp se desconectó:', reason);
+});
+
 client.on('ready', async () => {
+    whatsappListo = true;
     console.log('✅ ¡Sesión de WhatsApp conectada y lista para operar!');
 
     try {
@@ -49,12 +75,16 @@ client.on('ready', async () => {
     }
 });
 
-client.initialize();
+// Si Chrome o WhatsApp fallan al iniciar, el resto del servicio sigue operando
+client.initialize().catch((error) => {
+    whatsappListo = false;
+    console.error('❌ WhatsApp no pudo iniciar:', error.message);
+});
 
 // --- 1. RELOJ AUTOMÁTICO (CRON JOB) PARA LAS 5:30 A.M. ---
 cron.schedule('30 5 * * *', async () => {
     const fechaHoy = new Date().toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
-    
+
     ultimoReporteMatutino = `🚨 Reporte de Tráfico y Marchas CDMX - ${fechaHoy} \n\n` +
         `Buenos días equipo TAOS. Iniciamos monitoreo proactivo de vialidad a las 5:30 A.M.\n\n` +
         `🛣️ Rutas críticas hacia AICM y corporativos listas:\n` +
@@ -65,8 +95,13 @@ cron.schedule('30 5 * * *', async () => {
 
     console.log("⏰ [AUTOMATIZACIÓN] Generando reporte matutino de las 5:30 A.M. para WhatsApp...");
 
+    if (!whatsappListo) {
+        console.warn("⚠️ WhatsApp no está conectado; el reporte se generó pero no se envió.");
+        return;
+    }
+
     try {
-        const chatId = "5215534686687@c.us"; 
+        const chatId = "5215534686687@c.us";
         await client.sendMessage(chatId, ultimoReporteMatutino);
         console.log("✅ Reporte matutino enviado con éxito por WhatsApp.");
     } catch (error) {
@@ -79,7 +114,7 @@ cron.schedule('30 5 * * *', async () => {
 // --- 2. ENDPOINTS DE GPS ---
 app.post('/api/gps', (req, res) => {
     const { device, latitude, longitude, timestamp } = req.body;
-    
+
     if (!device || !latitude || !longitude) {
         return res.status(400).json({ status: "error", message: "Faltan datos de geolocalización" });
     }
@@ -111,7 +146,7 @@ app.get('/api/reporte-matutino', (req, res) => {
 app.get('/', (req, res) => {
     let listaUnidadesHTML = "<h3>Unidades Registradas en la Red:</h3>";
     const dispositivos = Object.keys(unidadesGPS);
-    
+
     if (dispositivos.length === 0) {
         listaUnidadesHTML = "<p>Esperando conexión GPS del dispositivo...</p>";
     } else {
@@ -126,15 +161,20 @@ app.get('/', (req, res) => {
         });
     }
 
+    const estadoWhatsApp = whatsappListo
+        ? '<p style="color: green; font-weight: bold;">🟢 Transmisión en Vivo Activa (WhatsApp y GPS Conectados)</p>'
+        : '<p style="color: #b45309; font-weight: bold;">🟡 Servidor activo · WhatsApp sin conectar (pendiente de escanear QR o reconectar)</p>';
+
     res.send(`
         <html>
             <head>
                 <title>Monitoreo Satelital - TAOS</title>
                 <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1">
             </head>
             <body style="font-family: Arial, sans-serif; padding: 20px; background: #f4f4f9;">
                 <h2>Monitoreo Satelital - TAOS / Best Buy</h2>
-                <p style="color: green; font-weight: bold;">🟢 Transmisión en Vivo Activa (WhatsApp y GPS Conectados)</p>
+                ${estadoWhatsApp}
                 <hr>
                 <h3>Posición Actual de la Unidad:</h3>
                 ${listaUnidadesHTML}
