@@ -12,12 +12,11 @@ app.use(express.json());
 let unidadesGPS = {};
 let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
 
-// --- CLIENTE DE WHATSAPP (CON RUTA CORREGIDA DE CHROMIUM PARA RENDER) ---
+// --- CLIENTE DE WHATSAPP (MODO ROBUSTO SIN RUTAS ESTÁTICAS) ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
         headless: true,
-        executablePath: '/usr/bin/chromium',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
