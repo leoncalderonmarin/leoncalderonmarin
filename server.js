@@ -12,11 +12,20 @@ app.use(express.json());
 let unidadesGPS = {};
 let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
 
-// --- CLIENTE DE WHATSAPP ---
+// --- CLIENTE DE WHATSAPP (CON ARGUMENTOS DE SEGURIDAD PARA RENDER) ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
+        ]
     }
 });
 
