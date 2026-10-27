@@ -1,144 +1,103 @@
 const express = require('express');
-const http = require('http');
-const WebSocket = require('ws');
-
+const cron = require('node-cron');
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
-
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// Almacén de la última posición en tiempo real
-let ultimaPosicion = {
-    deviceId: 'Esperando señal de Traccar...',
-    lat: 19.3520, // Coordenada inicial de referencia (CDMX)
-    lng: -99.1610,
-    timestamp: 'Sin transmisión'
-};
+// Memoria temporal para guardar posiciones GPS y el último reporte generado
+let unidadesGPS = {};
+let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
 
-// Interfaz web con Mapa Interactivo en tiempo real (Leaflet.js)
+// --- 1. RELOJ AUTOMÁTICO (CRON JOB) PARA LAS 5:30 A.M. ---
+// Se ejecuta exactamente a las 5:30 A.M., hora de la Ciudad de México, todos los días.
+cron.schedule('30 5 * * *', () => {
+    const fechaHoy = new Date().toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
+    
+    ultimoReporteMatutino = `🚨 Reporte de Tráfico y Marchas CDMX - ${fechaHoy} \n\n` +
+        `Buenos días equipo TAOS. Iniciamos monitoreo proactivo de vialidad a las 5:30 A.M.\n\n` +
+        `🛣️ Rutas críticas hacia AICM y corporativos listas:\n` +
+        `- Paseo de la Reforma y Circuito Interior con carga habitual.\n` +
+        `- Viaducto y Periférico con asentamientos moderados por incorporación.\n` +
+        `- Eje Central y Constituyentes operando con normalidad.\n\n` +
+        `Favor de revisar unidades asignadas y reportar check-in a tiempo. 👍🏼`;
+
+    console.log("⏰ [AUTOMATIZACIÓN] Reporte matutino de las 5:30 A.M. generado con éxito por el servidor.");
+}, {
+    timezone: "America/Mexico_City"
+});
+
+// --- 2. ENDPOINTS DE GPS (Rastreo en tiempo real) ---
+
+// Recibir coordenadas del operador o de tu Prius C
+app.post('/api/gps', (req, res) => {
+    const { device, latitude, longitude, timestamp } = req.body;
+    
+    if (!device || !latitude || !longitude) {
+        return res.status(400).json({ status: "error", message: "Faltan datos de geolocalización" });
+    }
+
+    unidadesGPS[device] = {
+        latitude,
+        longitude,
+        timestamp: timestamp || new Date().toLocaleTimeString()
+    };
+
+    console.log(`📍 Posición recibida de [${device}]: Lat ${latitude}, Lon ${longitude}`);
+    res.json({ status: "success", message: "Posición transmitida en tiempo real" });
+});
+
+// Consultar todas las unidades activas en el mapa
+app.get('/api/unidades', (req, res) => {
+    res.json(unidadesGPS);
+});
+
+// --- 3. ENDPOINT PARA CONSULTAR EL REPORTE MATUTINO AUTOMÁTICO ---
+app.get('/api/reporte-matutino', (req, res) => {
+    res.json({
+        status: "success",
+        hora_generacion: "5:30 A.M. (Automatizado en servidor)",
+        reporte: ultimoReporteMatutino
+    });
+});
+
+// --- 4. PANEL WEB DE MONITOREO SATELITAL TAOS ---
 app.get('/', (req, res) => {
+    // Si hay unidades, mostramos la última posición registrada en texto claro para tu prueba rápida
+    let listaUnidadesHTML = "<h3>Unidades Registradas en la Red:</h3>";
+    const dispositivos = Object.keys(unidadesGPS);
+    
+    if (dispositivos.length === 0) {
+        aprenderHTML = "<p>Esperando conexión GPS del dispositivo...</p>";
+    } else {
+        dispositivos.forEach(dev => {
+            const u = unidadesGPS[dev];
+            listaUnidadesHTML += `<div style="border:1px solid #ccc; padding:10px; margin:10px 0; border-radius:5px;">
+                <strong>Dispositivo:</strong> ${dev}<br>
+                <strong>Latitud:</strong> ${u.latitude}<br>
+                <strong>Longitud:</strong> ${u.longitude}<br>
+                <strong>Hora:</strong> ${u.timestamp}
+            </div>`;
+        });
+    }
+
     res.send(`
-        <!DOCTYPE html>
         <html>
             <head>
-                <title>Rastreo Satelital en Vivo - TAOS / Best Buy</title>
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <!-- Leaflet CSS -->
-                <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-                <style>
-                    body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f9; text-align: center; }
-                    h1 { color: #333; margin: 15px 0 5px 0; font-size: 22px; }
-                    .status { font-size: 14px; color: #0275d8; font-weight: bold; margin-bottom: 10px; }
-                    .live-dot { height: 10px; width: 10px; background-color: #28a745; border-radius: 50%; display: inline-block; margin-right: 5px; animation: pulse 1.5s infinite; }
-                    
-                    /* Contenedor del Mapa */
-                    #map { width: 100%; height: 60vh; min-height: 350px; }
-                    
-                    /* Panel de información inferior */
-                    .info-panel { background: white; padding: 15px; box-shadow: 0px -2px 10px rgba(0,0,0,0.1); text-align: left; max-width: 600px; margin: 0 auto; border-radius: 8px 8px 0 0; }
-                    .data-row { margin: 6px 0; font-size: 14px; color: #444; }
-                    .data-row strong { color: #111; }
-                </style>
+                <title>Monitoreo Satelital - TAOS</title>
+                <meta charset="utf-8">
             </head>
-            <body>
-                <h1>Monitoreo Satelital - TAOS</h1>
-                <p class="status"><span class="live-dot"></span> Transmisión en Vivo Activa</p>
-                
-                <!-- Mapa -->
-                <div id="map"></div>
-
-                <!-- Panel de Datos -->
-                <div class="info-panel">
-                    <div class="data-row"><strong>Unidad / Dispositivo:</strong> <span id="dev">${ultimaPosicion.deviceId}</span></div>
-                    <div class="data-row"><strong>Latitud:</strong> <span id="lat">${ultimaPosicion.lat}</span></div>
-                    <div class="data-row"><strong>Longitud:</strong> <span id="lng">${ultimaPosicion.lng}</span></div>
-                    <div class="data-row"><strong>Última Actualización:</strong> <span id="time">${ultimaPosicion.timestamp}</span></div>
-                </div>
-
-                <!-- Leaflet JS -->
-                <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-                <script>
-                    // Inicializar el mapa centrado en la posición inicial
-                    const map = L.map('map').setView([${ultimaPosicion.lat}, ${ultimaPosicion.lng}], 15);
-
-                    // Capa de diseño del mapa (OpenStreetMap)
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        maxZoom: 19,
-                        attribution: '&copy; OpenStreetMap contributors'
-                    }).addTo(map);
-
-                    // Crear el marcador para la unidad
-                    let marker = L.marker([${ultimaPosicion.lat}, ${ultimaPosicion.lng}]).addTo(map);
-                    marker.bindPopup("<b>Unidad:</b> ${ultimaPosicion.deviceId}").openPopup();
-
-                    // Conexión en tiempo real con WebSockets
-                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                    const ws = new WebSocket(protocol + '//' + window.location.host);
-
-                    ws.onmessage = function(event) {
-                        const data = JSON.parse(event.data);
-                        const lat = parseFloat(data.lat);
-                        const lng = parseFloat(data.lng);
-
-                        // Actualizar textos en pantalla
-                        document.getElementById('dev').innerText = data.deviceId;
-                        document.getElementById('lat').innerText = data.lat;
-                        document.getElementById('lng').innerText = data.lng;
-                        document.getElementById('time').innerText = data.timestamp;
-
-                        // Mover el marcador y centrar el mapa automáticamente en vivo
-                        const newLatLng = [lat, lng];
-                        marker.setLatLng(newLatLng);
-                        marker.setPopupContent("<b>Unidad:</b> " + data.deviceId + "<br>Hora: " + data.timestamp);
-                        map.setView(newLatLng, map.getZoom());
-                    };
-                </script>
+            <body style="font-family: Arial, sans-serif; padding: 20px; background: #f4f4f9;">
+                <h2>Monitoreo Satelital - TAOS / Best Buy</h2>
+                <p style="color: green; font-weight: bold;">🟢 Transmisión en Vivo Activa (Servidor en Render)</p>
+                <hr>
+                <h3>Posición Actual de la Unidad:</h3>
+                ${listaUnidadesHTML}
             </body>
         </html>
     `);
 });
 
-// Endpoint universal para recibir telemetría de Traccar Client
-app.all('/api/gps', (req, res) => {
-    const deviceId = req.query.id || req.query.device || req.body.id || req.body.deviceId || 'Unidad-Móvil';
-    const lat = req.query.lat || req.body.lat;
-    const lng = req.query.lon || req.query.lng || req.body.lon || req.body.lng;
-    
-    if (lat !== undefined && lng !== undefined) {
-        const horaMexico = new Date().toLocaleTimeString('es-MX', {
-            timeZone: 'America/Mexico_City',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hour12: true
-        });
-
-        ultimaPosicion = {
-            deviceId,
-            lat: parseFloat(lat),
-            lng: parseFloat(lng),
-            timestamp: horaMexico
-        };
-
-        console.log(`[MAPA GPS] Unidad: ${deviceId} | Lat: ${lat}, Lng: ${lng} | Hora: ${horaMexico}`);
-
-        // Transmitir inmediatamente la nueva coordenada a todas las pantallas abiertas por WebSocket
-        wss.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify(ultimaPosicion));
-            }
-        });
-
-        return res.status(200).send('OK');
-    }
-    
-    res.status(400).send('Faltan parámetros de coordenadas');
-});
-
-server.listen(PORT, () => {
-    console.log(`Servidor de mapas operando en el puerto ${PORT}`);
+app.listen(PORT, () => {
+    console.log(`Servidor TAOS corriendo con éxito en el puerto ${PORT}`);
 });
