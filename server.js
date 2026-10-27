@@ -8,11 +8,9 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Memoria temporal para guardar posiciones GPS y el último reporte generado
 let unidadesGPS = {};
 let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
 
-// --- CLIENTE DE WHATSAPP CONFIGURADO SIN RUTA ESTÁTICA ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -51,7 +49,6 @@ client.on('ready', async () => {
 
 client.initialize();
 
-// --- 1. RELOJ AUTOMÁTICO (CRON JOB) PARA LAS 5:30 A.M. ---
 cron.schedule('30 5 * * *', async () => {
     const fechaHoy = new Date().toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
     
@@ -76,7 +73,6 @@ cron.schedule('30 5 * * *', async () => {
     timezone: "America/Mexico_City"
 });
 
-// --- 2. ENDPOINTS DE GPS ---
 app.post('/api/gps', (req, res) => {
     const { device, latitude, longitude, timestamp } = req.body;
     
@@ -98,7 +94,6 @@ app.get('/api/unidades', (req, res) => {
     res.json(unidadesGPS);
 });
 
-// --- 3. ENDPOINT PARA CONSULTAR EL REPORTE MATUTINO ---
 app.get('/api/reporte-matutino', (req, res) => {
     res.json({
         status: "success",
@@ -107,7 +102,6 @@ app.get('/api/reporte-matutino', (req, res) => {
     });
 });
 
-// --- 4. PANEL WEB DE MONITOREO SATELITAL TAOS ---
 app.get('/', (req, res) => {
     let listaUnidadesHTML = "<h3>Unidades Registradas en la Red:</h3>";
     const dispositivos = Object.keys(unidadesGPS);
