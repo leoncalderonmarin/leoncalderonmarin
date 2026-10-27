@@ -8,15 +8,15 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Memoria temporal para guardar posiciones GPS y el último reporte generado
 let unidadesGPS = {};
 let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
 
-// --- CLIENTE DE WHATSAPP (MODO ROBUSTO SIN RUTAS ESTÁTICAS) ---
+// --- CLIENTE DE WHATSAPP CON RUTA DE CACHÉ DE RENDER ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
         headless: true,
+        executablePath: '/opt/render/project/src/.cache/puppeteer/chrome/linux-146.0.7680.31/chrome-linux64/chrome',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
