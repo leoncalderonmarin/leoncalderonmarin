@@ -12,12 +12,11 @@ app.use(express.json());
 let unidadesGPS = {};
 let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
 
-// --- CLIENTE DE WHATSAPP CON RUTA DE CACHÉ GLOBAL DE RENDER ---
+// --- CLIENTE DE WHATSAPP CON DETECCIÓN AUTOMÁTICA DE PUPPETEER ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
         headless: true,
-        executablePath: '/opt/render/cache/puppeteer/chrome/linux-146.0.7680.31/chrome-linux64/chrome',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
