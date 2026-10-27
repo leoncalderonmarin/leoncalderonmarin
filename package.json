@@ -1,4 +1,4 @@
-{
+
   "name": "gps-tracker-demo-taos",
   "version": "1.0.0",
   "description": "Sistema de Monitoreo GPS y Automatizacion TAOS con WhatsApp",
@@ -10,7 +10,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "node-cron": "^3.0.3",
-    "whatsapp-web.js": "^1.23.0",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.23.0"
   }
 }
