@@ -12,11 +12,12 @@ app.use(express.json());
 let unidadesGPS = {};
 let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
 
-// --- CLIENTE DE WHATSAPP (CON ARGUMENTOS DE SEGURIDAD PARA RENDER) ---
+// --- CLIENTE DE WHATSAPP (CONFIGURADO PARA CHROMIUM EN RENDER) ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
         headless: true,
+        executablePath: process.env.CHROME_PATH || '/usr/bin/chromium-browser',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -37,7 +38,6 @@ client.on('qr', (qr) => {
 client.on('ready', async () => {
     console.log('✅ ¡Sesión de WhatsApp conectada y lista para operar!');
 
-    // Esto imprimirá en la consola de Render todos tus chats y grupos con su ID exacto
     try {
         const chats = await client.getChats();
         console.log('--- 📋 LISTA DE CHATS Y GRUPOS DISPONIBLES ---');
@@ -67,10 +67,7 @@ cron.schedule('30 5 * * *', async () => {
     console.log("⏰ [AUTOMATIZACIÓN] Generando reporte matutino de las 5:30 A.M. para WhatsApp...");
 
     try {
-        // Destino configurado con tu número personal para prueba directa
         const chatId = "5215534686687@c.us"; 
-        // Nota: Si prefieres el grupo, aquí pondrás el ID que termine en @g.us que veas en la consola.
-
         await client.sendMessage(chatId, ultimoReporteMatutino);
         console.log("✅ Reporte matutino enviado con éxito por WhatsApp.");
     } catch (error) {
