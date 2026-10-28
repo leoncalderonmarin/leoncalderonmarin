@@ -1,7 +1,6 @@
 const express = require('express');
 const cron = require('node-cron');
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,7 +14,7 @@ process.on('unhandledRejection', (reason) => {
 let unidadesGPS = {};
 let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
 let whatsappListo = false;
-let ultimoQR = ""; // Variable para almacenar el código QR en texto
+let codigoVinculacion = ""; 
 
 const client = new Client({
     authStrategy: new LocalAuth({
@@ -35,11 +34,10 @@ const client = new Client({
     }
 });
 
-client.on('qr', (qr) => {
-    whatsappListo = false;
-    ultimoQR = qr; // Guardamos el QR para mostrarlo en la web
-    console.log('📱 ESCANEA ESTE CÓDIGO QR desde los logs o tu panel web:');
-    qrcode.generate(qr, { small: true });
+// Evento cuando WhatsApp genera un código de emparejamiento por número
+client.on('code', (code) => {
+    codigoVinculacion = code;
+    console.log(`🔢 CÓDIGO DE VINCULACIÓN DE WHATSAPP: ${code}`);
 });
 
 client.on('authenticated', () => {
@@ -53,13 +51,13 @@ client.on('auth_failure', (msg) => {
 
 client.on('disconnected', (reason) => {
     whatsappListo = false;
-    ultimoQR = "";
+    codigoVinculacion = "";
     console.error('⚠️ WhatsApp se desconectó:', reason);
 });
 
 client.on('ready', async () => {
     whatsappListo = true;
-    ultimoQR = ""; // Limpiamos el QR porque ya se conectó
+    codigoVinculacion = ""; 
     console.log('✅ ¡Sesión de WhatsApp conectada y lista para operar!');
 
     try {
@@ -74,7 +72,17 @@ client.on('ready', async () => {
     }
 });
 
-client.initialize().catch((error) => {
+// IMPORTANTE: Aquí debes poner el número de WhatsApp de la operación con lada (ejemplo: 52155XXXXXXXX)
+client.initialize().then(async () => {
+    try {
+        const phoneNumber = "5215534686687"; // Reemplaza con tu número completo si es necesario
+        const pairingCode = await client.requestPairingCode(phoneNumber);
+        console.log(`🔢 Tu código de emparejamiento es: ${pairingCode}`);
+        codigoVinculacion = pairingCode;
+    } catch (err) {
+        console.error("No se pudo solicitar el código de emparejamiento automáticamente:", err);
+    }
+}).catch((error) => {
     whatsappListo = false;
     console.error('❌ WhatsApp no pudo iniciar:', error.message);
 });
@@ -157,14 +165,15 @@ app.get('/', (req, res) => {
 
     const estadoWhatsApp = whatsappListo
         ? '<p style="color: green; font-weight: bold;">🟢 Transmisión en Vivo Activa (WhatsApp y GPS Conectados)</p>'
-        : '<p style="color: #b45309; font-weight: bold;">🟡 Servidor activo · WhatsApp sin conectar</p>';
+        : '<p style="color: #b45309; font-weight: bold;">🟡 Servidor activo · Ingresa el código de 8 dígitos en WhatsApp</p>';
 
-    // Si hay un QR pendiente, lo generamos en imagen limpia directo en la web
-    const qrSeccion = ultimoQR && !whatsappListo
-        ? `<div style="background: #222; padding: 20px; border-radius: 10px; text-align: center; margin: 20px 0;">
-               <h3 style="color: #fff;">📱 Escanea este código QR con WhatsApp:</h3>
-               <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(ultimoQR)}" alt="QR WhatsApp" style="border: 5px solid #fff; border-radius: 8px;" />
-               <p style="color: #aaa; font-size: 14px; margin-top: 10px;">Actualiza la página si tarda en aparecer.</p>
+    const codigoSeccion = codigoVinculacion && !whatsappListo
+        ? `<div style="background: #222; padding: 25px; border-radius: 12px; text-align: center; margin: 20px 0; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
+               <h3 style="color: #fff; margin-bottom: 10px;">🔢 Tu Código de Vinculación:</h3>
+               <div style="font-size: 36px; font-family: monospace; color: #4ade80; background: #111; padding: 15px; border-radius: 8px; letter-spacing: 5px; font-weight: bold;">
+                   ${codigoVinculacion}
+               </div>
+               <p style="color: #aaa; font-size: 14px; margin-top: 15px;">Escribe este código de 8 dígitos en tu teléfono para completar la vinculación.</p>
            </div>`
         : '';
 
@@ -178,12 +187,12 @@ app.get('/', (req, res) => {
             <body style="font-family: Arial, sans-serif; padding: 20px; background: #f4f4f9;">
                 <h2>Monitoreo Satelital - TAOS / Best Buy</h2>
                 ${estadoWhatsApp}
-                ${qrSeccion}
+                ${codigoSeccion}
                 <hr>
                 <h3>Posición Actual de la Unidad:</h3>
                 ${listaUnidadesHTML}
             </body>
-        </html>
+        </thead>
     `);
 });
 
