@@ -7,6 +7,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
+// Evita que un error no capturado tumbe todo el servicio (GPS, panel y cron)
 process.on('unhandledRejection', (reason) => {
     console.error('⚠️ Promesa rechazada sin manejar:', reason);
 });
@@ -14,12 +15,22 @@ process.on('unhandledRejection', (reason) => {
 let unidadesGPS = {};
 let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
 let whatsappListo = false;
-let codigoVinculacion = ""; 
+let codigoVinculacion = "";
+
+// Número de la cuenta de WhatsApp que se va a vincular (código de país + número, sin símbolos).
+// Se puede cambiar desde Render con la variable de entorno WHATSAPP_PAIR_PHONE, sin tocar el código.
+const NUMERO_VINCULACION = process.env.WHATSAPP_PAIR_PHONE || '5215534686687';
 
 const client = new Client({
     authStrategy: new LocalAuth({
         dataPath: process.env.WWEBJS_DATA_PATH || './.wwebjs_auth'
     }),
+    // Forma documentada de vincular con código: la propia librería solicita el código
+    // y lo entrega por el evento 'code'. Con esta opción NO se genera QR.
+    pairWithPhoneNumber: {
+        phoneNumber: NUMERO_VINCULACION,
+        showNotification: true
+    },
     puppeteer: {
         headless: true,
         args: [
@@ -34,7 +45,6 @@ const client = new Client({
     }
 });
 
-// Evento cuando WhatsApp genera un código de emparejamiento por número
 client.on('code', (code) => {
     codigoVinculacion = code;
     console.log(`🔢 CÓDIGO DE VINCULACIÓN DE WHATSAPP: ${code}`);
@@ -57,7 +67,7 @@ client.on('disconnected', (reason) => {
 
 client.on('ready', async () => {
     whatsappListo = true;
-    codigoVinculacion = ""; 
+    codigoVinculacion = "";
     console.log('✅ ¡Sesión de WhatsApp conectada y lista para operar!');
 
     try {
@@ -72,19 +82,10 @@ client.on('ready', async () => {
     }
 });
 
-// IMPORTANTE: Aquí debes poner el número de WhatsApp de la operación con lada (ejemplo: 52155XXXXXXXX)
-client.initialize().then(async () => {
-    try {
-        const phoneNumber = "5215534686687"; // Reemplaza con tu número completo si es necesario
-        const pairingCode = await client.requestPairingCode(phoneNumber);
-        console.log(`🔢 Tu código de emparejamiento es: ${pairingCode}`);
-        codigoVinculacion = pairingCode;
-    } catch (err) {
-        console.error("No se pudo solicitar el código de emparejamiento automáticamente:", err);
-    }
-}).catch((error) => {
+// Si Chrome o WhatsApp fallan al iniciar, el resto del servicio sigue operando
+client.initialize().catch((error) => {
     whatsappListo = false;
-    console.error('❌ WhatsApp no pudo iniciar:', error.message);
+    console.error('❌ WhatsApp no pudo iniciar:', error.message || error);
 });
 
 cron.schedule('30 5 * * *', async () => {
@@ -163,19 +164,24 @@ app.get('/', (req, res) => {
         });
     }
 
+    const mostrarCodigo = Boolean(codigoVinculacion) && !whatsappListo;
+
     const estadoWhatsApp = whatsappListo
         ? '<p style="color: green; font-weight: bold;">🟢 Transmisión en Vivo Activa (WhatsApp y GPS Conectados)</p>'
-        : '<p style="color: #b45309; font-weight: bold;">🟡 Servidor activo · Ingresa el código de 8 dígitos en WhatsApp</p>';
+        : '<p style="color: #b45309; font-weight: bold;">🟡 Servidor activo · WhatsApp sin vincular</p>';
 
-    const codigoSeccion = codigoVinculacion && !whatsappListo
-        ? `<div style="background: #222; padding: 25px; border-radius: 12px; text-align: center; margin: 20px 0; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
-               <h3 style="color: #fff; margin-bottom: 10px;">🔢 Tu Código de Vinculación:</h3>
+    const codigoSeccion = mostrarCodigo
+        ? `<div style="background: #222; padding: 25px; border-radius: 12px; text-align: center; margin: 20px 0;">
+               <h3 style="color: #fff; margin-bottom: 10px;">🔢 Código de vinculación:</h3>
                <div style="font-size: 36px; font-family: monospace; color: #4ade80; background: #111; padding: 15px; border-radius: 8px; letter-spacing: 5px; font-weight: bold;">
                    ${codigoVinculacion}
                </div>
-               <p style="color: #aaa; font-size: 14px; margin-top: 15px;">Escribe este código de 8 dígitos en tu teléfono para completar la vinculación.</p>
+               <p style="color: #aaa; font-size: 14px; margin-top: 15px;">En WhatsApp: Dispositivos vinculados → Vincular dispositivo → Vincular con el número de teléfono. La página se actualiza sola cada 15 segundos.</p>
            </div>`
         : '';
+
+    // Recarga automática solo mientras se espera la vinculación
+    const recarga = mostrarCodigo ? '<meta http-equiv="refresh" content="15">' : '';
 
     res.send(`
         <html>
@@ -183,6 +189,7 @@ app.get('/', (req, res) => {
                 <title>Monitoreo Satelital - TAOS</title>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
+                ${recarga}
             </head>
             <body style="font-family: Arial, sans-serif; padding: 20px; background: #f4f4f9;">
                 <h2>Monitoreo Satelital - TAOS / Best Buy</h2>
@@ -192,7 +199,7 @@ app.get('/', (req, res) => {
                 <h3>Posición Actual de la Unidad:</h3>
                 ${listaUnidadesHTML}
             </body>
-        </thead>
+        </html>
     `);
 });
 
