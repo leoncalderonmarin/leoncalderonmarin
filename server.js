@@ -8,19 +8,15 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Evita que un error no capturado tumbe todo el servicio (GPS, panel y cron)
 process.on('unhandledRejection', (reason) => {
     console.error('⚠️ Promesa rechazada sin manejar:', reason);
 });
 
-// Memoria temporal para guardar posiciones GPS y el último reporte generado
 let unidadesGPS = {};
 let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
 let whatsappListo = false;
+let ultimoQR = ""; // Variable para almacenar el código QR en texto
 
-// --- CLIENTE DE WHATSAPP ---
-// La sesión se guarda en WWEBJS_DATA_PATH (por ejemplo, un disco persistente de Render).
-// Si la variable no existe, usa la carpeta local por defecto.
 const client = new Client({
     authStrategy: new LocalAuth({
         dataPath: process.env.WWEBJS_DATA_PATH || './.wwebjs_auth'
@@ -41,7 +37,8 @@ const client = new Client({
 
 client.on('qr', (qr) => {
     whatsappListo = false;
-    console.log('📱 ESCANEA ESTE CÓDIGO QR con el WhatsApp de TAOS:');
+    ultimoQR = qr; // Guardamos el QR para mostrarlo en la web
+    console.log('📱 ESCANEA ESTE CÓDIGO QR desde los logs o tu panel web:');
     qrcode.generate(qr, { small: true });
 });
 
@@ -56,11 +53,13 @@ client.on('auth_failure', (msg) => {
 
 client.on('disconnected', (reason) => {
     whatsappListo = false;
+    ultimoQR = "";
     console.error('⚠️ WhatsApp se desconectó:', reason);
 });
 
 client.on('ready', async () => {
     whatsappListo = true;
+    ultimoQR = ""; // Limpiamos el QR porque ya se conectó
     console.log('✅ ¡Sesión de WhatsApp conectada y lista para operar!');
 
     try {
@@ -75,13 +74,11 @@ client.on('ready', async () => {
     }
 });
 
-// Si Chrome o WhatsApp fallan al iniciar, el resto del servicio sigue operando
 client.initialize().catch((error) => {
     whatsappListo = false;
     console.error('❌ WhatsApp no pudo iniciar:', error.message);
 });
 
-// --- 1. RELOJ AUTOMÁTICO (CRON JOB) PARA LAS 5:30 A.M. ---
 cron.schedule('30 5 * * *', async () => {
     const fechaHoy = new Date().toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
 
@@ -111,7 +108,6 @@ cron.schedule('30 5 * * *', async () => {
     timezone: "America/Mexico_City"
 });
 
-// --- 2. ENDPOINTS DE GPS ---
 app.post('/api/gps', (req, res) => {
     const { device, latitude, longitude, timestamp } = req.body;
 
@@ -133,7 +129,6 @@ app.get('/api/unidades', (req, res) => {
     res.json(unidadesGPS);
 });
 
-// --- 3. ENDPOINT PARA CONSULTAR EL REPORTE MATUTINO ---
 app.get('/api/reporte-matutino', (req, res) => {
     res.json({
         status: "success",
@@ -142,7 +137,6 @@ app.get('/api/reporte-matutino', (req, res) => {
     });
 });
 
-// --- 4. PANEL WEB DE MONITOREO SATELITAL TAOS ---
 app.get('/', (req, res) => {
     let listaUnidadesHTML = "<h3>Unidades Registradas en la Red:</h3>";
     const dispositivos = Object.keys(unidadesGPS);
@@ -163,7 +157,16 @@ app.get('/', (req, res) => {
 
     const estadoWhatsApp = whatsappListo
         ? '<p style="color: green; font-weight: bold;">🟢 Transmisión en Vivo Activa (WhatsApp y GPS Conectados)</p>'
-        : '<p style="color: #b45309; font-weight: bold;">🟡 Servidor activo · WhatsApp sin conectar (pendiente de escanear QR o reconectar)</p>';
+        : '<p style="color: #b45309; font-weight: bold;">🟡 Servidor activo · WhatsApp sin conectar</p>';
+
+    // Si hay un QR pendiente, lo generamos en imagen limpia directo en la web
+    const qrSeccion = ultimoQR && !whatsappListo
+        ? `<div style="background: #222; padding: 20px; border-radius: 10px; text-align: center; margin: 20px 0;">
+               <h3 style="color: #fff;">📱 Escanea este código QR con WhatsApp:</h3>
+               <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(ultimoQR)}" alt="QR WhatsApp" style="border: 5px solid #fff; border-radius: 8px;" />
+               <p style="color: #aaa; font-size: 14px; margin-top: 10px;">Actualiza la página si tarda en aparecer.</p>
+           </div>`
+        : '';
 
     res.send(`
         <html>
@@ -175,6 +178,7 @@ app.get('/', (req, res) => {
             <body style="font-family: Arial, sans-serif; padding: 20px; background: #f4f4f9;">
                 <h2>Monitoreo Satelital - TAOS / Best Buy</h2>
                 ${estadoWhatsApp}
+                ${qrSeccion}
                 <hr>
                 <h3>Posición Actual de la Unidad:</h3>
                 ${listaUnidadesHTML}
