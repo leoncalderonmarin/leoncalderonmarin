@@ -1,6 +1,8 @@
 const express = require('express');
 const cron = require('node-cron');
 const { Client, LocalAuth } = require('whatsapp-web.js');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,9 +23,13 @@ let codigoVinculacion = "";
 // Se puede cambiar desde Render con la variable de entorno WHATSAPP_PAIR_PHONE, sin tocar el código.
 const NUMERO_VINCULACION = process.env.WHATSAPP_PAIR_PHONE || '5215534686687';
 
+// Carpeta donde se guarda la sesión de WhatsApp. En Render debe apuntar al disco persistente
+// (por ejemplo /var/data/wwebjs_auth) para que NO se pida un código nuevo en cada reinicio.
+const RUTA_SESION = process.env.WWEBJS_DATA_PATH || './.wwebjs_auth';
+
 const client = new Client({
     authStrategy: new LocalAuth({
-        dataPath: process.env.WWEBJS_DATA_PATH || './.wwebjs_auth'
+        dataPath: RUTA_SESION
     }),
     // Forma documentada de vincular con código: la propia librería solicita el código
     // y lo entrega por el evento 'code'. Con esta opción NO se genera QR.
@@ -81,6 +87,38 @@ client.on('ready', async () => {
         console.error('No se pudieron listar los chats:', error);
     }
 });
+
+// Chrome deja archivos de bloqueo si se cierra de golpe; con un disco persistente podrían
+// impedir el siguiente arranque, así que se eliminan antes de iniciar.
+function prepararSesion() {
+    const carpetaSesion = path.join(RUTA_SESION, 'session');
+    try {
+        for (const archivo of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+            fs.rmSync(path.join(carpetaSesion, archivo), { force: true });
+        }
+    } catch (error) {
+        console.warn('⚠️ No se pudieron limpiar los bloqueos de Chrome:', error.message);
+    }
+
+    if (fs.existsSync(carpetaSesion)) {
+        console.log(`💾 Sesión guardada encontrada en ${carpetaSesion}: no debería pedir código nuevo.`);
+    } else {
+        console.log(`🆕 No hay sesión guardada en ${carpetaSesion}: se pedirá un código de vinculación.`);
+    }
+}
+
+// Render avisa con SIGTERM antes de apagar: se cierra Chrome con calma para no dañar la sesión
+process.on('SIGTERM', async () => {
+    console.log('🛑 Apagado solicitado; cerrando WhatsApp con calma...');
+    try {
+        await client.destroy();
+    } catch (error) {
+        // Si Chrome aún no había iniciado, no hay nada que cerrar
+    }
+    process.exit(0);
+});
+
+prepararSesion();
 
 // Si Chrome o WhatsApp fallan al iniciar, el resto del servicio sigue operando
 client.initialize().catch((error) => {
