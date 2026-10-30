@@ -14,11 +14,10 @@ let clientReady = false;
 let ultimaConexionStatus = "Iniciando servidor...";
 let ultimoEnvioEstado = { ok: false, fecha: null, error: null };
 
-// Configuración robusta de Puppeteer para Render (soluciona el error de Chrome binario)
+// Configuración del cliente de WhatsApp con persistencia local en disco
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: 'taos-fleet-session' }),
     puppeteer: {
-        executablePath: process.env.CHROME_PATH || undefined,
         headless: true,
         args: [
             '--no-sandbox',
@@ -59,7 +58,6 @@ client.on('disconnected', (reason) => {
     console.log('WhatsApp desconectado:', reason);
 });
 
-// Captura opcional de grupos para ID
 client.on('message', async (msg) => {
     try {
         const chat = await msg.getChat();
@@ -90,7 +88,6 @@ function generarReporteTráficoDinámico() {
            `💡 *Aviso Ejecutivo:* Unidades operando bajo estricto control de semáforos de mantenimiento y verificación ambiental. ¡Excelente y segura jornada! 👍🏼`;
 }
 
-// Función central para disparar el envío del reporte
 async function ejecutarEnvioReporteMatutino() {
     const destinoConfigurado = process.env.WHATSAPP_REPORTE_DESTINO || '5215500000000@c.us';
     
@@ -118,7 +115,6 @@ async function ejecutarEnvioReporteMatutino() {
     }
 }
 
-// Simulador de Cron interno para las 5:30 A.M. hora CDMX (11:30 UTC)
 setInterval(() => {
     const ahora = new Date();
     if (ahora.getUTCHours() === 11 && ahora.getUTCMinutes() === 30) {
@@ -130,7 +126,6 @@ setInterval(() => {
     }
 }, 60000);
 
-// Endpoints de la API del Servidor
 app.get('/', async (req, res) => {
     let html = `
     <html>
