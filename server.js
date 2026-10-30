@@ -19,9 +19,20 @@ let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30
 let whatsappListo = false;
 let codigoVinculacion = "";
 
+// Resultado del último intento de envío (se puede consultar en /api/reporte-matutino)
+let ultimoEnvio = { fecha: null, ok: null, detalle: "Aún no se ha intentado enviar ningún reporte." };
+
 // Número de la cuenta de WhatsApp que se va a vincular (código de país + número, sin símbolos).
 // Se puede cambiar desde Render con la variable de entorno WHATSAPP_PAIR_PHONE, sin tocar el código.
 const NUMERO_VINCULACION = process.env.WHATSAPP_PAIR_PHONE || '5215534686687';
+
+// Destino del reporte. Por defecto, el mismo número vinculado (mensaje a uno mismo).
+// Para mandarlo a un grupo, define en Render WHATSAPP_REPORTE_DESTINO con el ID del grupo
+// (termina en @g.us). También acepta un número o un ID terminado en @c.us.
+const DESTINO_REPORTE = process.env.WHATSAPP_REPORTE_DESTINO || NUMERO_VINCULACION;
+
+// Clave para la prueba manual de envío. Si no la defines en Render, la prueba queda deshabilitada.
+const TOKEN_ADMIN = process.env.ADMIN_TOKEN || '';
 
 // Carpeta donde se guarda la sesión de WhatsApp. En Render debe apuntar al disco persistente
 // (por ejemplo /var/data/wwebjs_auth) para que NO se pida un código nuevo en cada reinicio.
@@ -76,6 +87,8 @@ client.on('ready', async () => {
     codigoVinculacion = "";
     console.log('✅ ¡Sesión de WhatsApp conectada y lista para operar!');
 
+    // Listar chats es solo informativo. Con las versiones recientes de WhatsApp Web,
+    // getChats() puede fallar con "r: r"; eso NO impide enviar mensajes.
     try {
         const chats = await client.getChats();
         console.log('--- 📋 LISTA DE CHATS Y GRUPOS DISPONIBLES ---');
@@ -84,7 +97,22 @@ client.on('ready', async () => {
         });
         console.log('---------------------------------------------');
     } catch (error) {
-        console.error('No se pudieron listar los chats:', error);
+        console.warn('ℹ️ No se pudo listar los chats (falla conocida de la librería; no afecta el envío del reporte).');
+    }
+});
+
+// Alternativa a getChats() para descubrir el ID de un grupo: al escribir un mensaje en el grupo
+// (desde el celular vinculado o desde otro integrante), el ID aparece una sola vez en el log.
+const gruposDetectados = new Set();
+client.on('message_create', (msg) => {
+    try {
+        const idChat = msg.fromMe ? msg.to : msg.from;
+        if (typeof idChat === 'string' && idChat.endsWith('@g.us') && !gruposDetectados.has(idChat)) {
+            gruposDetectados.add(idChat);
+            console.log(`👥 GRUPO DETECTADO ---> ID: ${idChat}`);
+        }
+    } catch (error) {
+        console.warn('⚠️ No se pudo leer el ID del chat:', error.message);
     }
 });
 
@@ -126,33 +154,95 @@ client.initialize().catch((error) => {
     console.error('❌ WhatsApp no pudo iniciar:', error.message || error);
 });
 
-cron.schedule('30 5 * * *', async () => {
+// ---------------------------------------------------------------------------
+// Reporte matutino
+// ---------------------------------------------------------------------------
+
+function construirReporte() {
     const fechaHoy = new Date().toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
 
-    ultimoReporteMatutino = `🚨 Reporte de Tráfico y Marchas CDMX - ${fechaHoy} \n\n` +
+    return `🚨 Reporte de Tráfico y Marchas CDMX - ${fechaHoy} \n\n` +
         `Buenos días equipo TAOS. Iniciamos monitoreo proactivo de vialidad a las 5:30 A.M.\n\n` +
         `🛣️ Rutas críticas hacia AICM y corporativos listas:\n` +
         `- Paseo de la Reforma y Circuito Interior con carga habitual.\n` +
         `- Viaducto y Periférico con asentamientos moderados por incorporación.\n` +
         `- Eje Central y Constituyentes operando con normalidad.\n\n` +
         `Favor de revisar unidades asignadas y reportar check-in a tiempo. 👍🏼`;
+}
 
-    console.log("⏰ [AUTOMATIZACIÓN] Generando reporte matutino de las 5:30 A.M. para WhatsApp...");
+// Algunas versiones de la librería devuelven el ID sin la propiedad _serialized;
+// en ese caso se reconstruye con usuario y servidor.
+function idDeContacto(id) {
+    if (!id) return null;
+    if (typeof id === 'string') return id;
+    if (id._serialized) return id._serialized;
+    return (id.user && id.server) ? `${id.user}@${id.server}` : null;
+}
+
+// En México, WhatsApp puede registrar el número con o sin el "1" después del 52.
+// Se prueban ambas variantes y se usa la que WhatsApp confirme como registrada.
+function variantesNumero(numero) {
+    const limpio = String(numero).replace(/\D/g, '');
+    const variantes = [limpio];
+    if (/^521\d{10}$/.test(limpio)) {
+        variantes.push('52' + limpio.slice(3));
+    } else if (/^52\d{10}$/.test(limpio)) {
+        variantes.push('521' + limpio.slice(2));
+    }
+    return variantes;
+}
+
+async function resolverDestino(destino) {
+    // Si ya es un ID de chat o de grupo, se usa tal cual
+    if (/@(c\.us|g\.us)$/.test(destino)) return destino;
+
+    for (const candidato of variantesNumero(destino)) {
+        const id = idDeContacto(await client.getNumberId(candidato));
+        if (id) return id;
+    }
+    throw new Error(`El número ${destino} no aparece registrado en WhatsApp (se probaron las variantes con y sin "1" después del 52).`);
+}
+
+async function enviarReporteMatutino(origen) {
+    ultimoReporteMatutino = construirReporte();
+    console.log(`⏰ [${origen}] Generando reporte matutino para WhatsApp...`);
 
     if (!whatsappListo) {
-        console.warn("⚠️ WhatsApp no está conectado; el reporte se generó pero no se envió.");
-        return;
+        ultimoEnvio = { fecha: new Date().toISOString(), ok: false, detalle: 'WhatsApp no está conectado; el reporte se generó pero no se envió.' };
+        console.warn(`⚠️ ${ultimoEnvio.detalle}`);
+        return ultimoEnvio;
     }
 
     try {
-        const chatId = "5215534686687@c.us";
+        const chatId = await resolverDestino(DESTINO_REPORTE);
         await client.sendMessage(chatId, ultimoReporteMatutino);
-        console.log("✅ Reporte matutino enviado con éxito por WhatsApp.");
+        ultimoEnvio = { fecha: new Date().toISOString(), ok: true, detalle: `Reporte enviado a ${chatId}` };
+        console.log(`✅ ${ultimoEnvio.detalle}`);
     } catch (error) {
-        console.error("❌ Error al enviar el mensaje automático por WhatsApp:", error);
+        ultimoEnvio = { fecha: new Date().toISOString(), ok: false, detalle: error.message || String(error) };
+        console.error('❌ Error al enviar el reporte por WhatsApp:', error);
     }
+    return ultimoEnvio;
+}
+
+cron.schedule('30 5 * * *', () => {
+    enviarReporteMatutino('AUTOMATIZACIÓN 5:30 A.M.');
 }, {
     timezone: "America/Mexico_City"
+});
+
+// Prueba manual: abre en el navegador  https://TU-SERVICIO.onrender.com/api/enviar-reporte-prueba?token=TU_ADMIN_TOKEN
+// Requiere definir ADMIN_TOKEN en Render. Quita esa variable cuando termines las pruebas.
+app.get('/api/enviar-reporte-prueba', async (req, res) => {
+    if (!TOKEN_ADMIN) {
+        return res.status(503).json({ status: 'error', message: 'Prueba deshabilitada: define la variable ADMIN_TOKEN en Render.' });
+    }
+    if (req.query.token !== TOKEN_ADMIN) {
+        return res.status(401).json({ status: 'error', message: 'Token incorrecto.' });
+    }
+
+    const resultado = await enviarReporteMatutino('PRUEBA MANUAL');
+    res.status(resultado.ok ? 200 : 500).json(resultado);
 });
 
 app.post('/api/gps', (req, res) => {
@@ -180,7 +270,8 @@ app.get('/api/reporte-matutino', (req, res) => {
     res.json({
         status: "success",
         hora_generacion: "5:30 A.M. (Automatizado en servidor)",
-        reporte: ultimoReporteMatutino
+        reporte: ultimoReporteMatutino,
+        ultimo_envio: ultimoEnvio
     });
 });
 
