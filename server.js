@@ -14,10 +14,11 @@ let clientReady = false;
 let ultimaConexionStatus = "Iniciando servidor...";
 let ultimoEnvioEstado = { ok: false, fecha: null, error: null };
 
-// Configuración del cliente de WhatsApp con persistencia local en disco
+// Configuración robusta de Puppeteer para Render (soluciona el error de Chrome binario)
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: 'taos-fleet-session' }),
     puppeteer: {
+        executablePath: process.env.CHROME_PATH || undefined,
         headless: true,
         args: [
             '--no-sandbox',
@@ -26,6 +27,7 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
+            '--single-process',
             '--disable-gpu'
         ]
     }
@@ -65,7 +67,7 @@ client.on('message', async (msg) => {
             console.log(`[GRUPO DETECTADO] Nombre: ${chat.name} | ID: ${chat.id._serialized}`);
         }
     } catch (e) {
-        // Ignorar errores menores de lectura de mensajes
+        // Ignorar errores menores
     }
 });
 
@@ -90,7 +92,7 @@ function generarReporteTráficoDinámico() {
 
 // Función central para disparar el envío del reporte
 async function ejecutarEnvioReporteMatutino() {
-    const destinoConfigurado = process.env.WHATSAPP_REPORTE_DESTINO || '5215500000000@c.us'; // Número personal o ID de grupo
+    const destinoConfigurado = process.env.WHATSAPP_REPORTE_DESTINO || '5215500000000@c.us';
     
     try {
         if (!clientReady) {
@@ -119,16 +121,14 @@ async function ejecutarEnvioReporteMatutino() {
 // Simulador de Cron interno para las 5:30 A.M. hora CDMX (11:30 UTC)
 setInterval(() => {
     const ahora = new Date();
-    // UTC hours y minutes para las 5:30 CDMX (UTC-6 en horario estándar o UTC-5 en verano, ajustado a UTC 11:30)
     if (ahora.getUTCHours() === 11 && ahora.getUTCMinutes() === 30) {
-        // Validar que no se mande dos veces en el mismo minuto
         const fechaIsoHoy = ahora.toISOString().split('T')[0];
         if (ultimoEnvioEstado.fecha && ultimoEnvioEstado.fecha.startsWith(fechaIsoHoy) && ultimoEnvioEstado.ok) {
-            return; // Ya se envió hoy
+            return;
         }
         ejecutarEnvioReporteMatutino();
     }
-}, 60000); // Revisa cada minuto
+}, 60000);
 
 // Endpoints de la API del Servidor
 app.get('/', async (req, res) => {
@@ -178,7 +178,6 @@ app.get('/', async (req, res) => {
     res.send(html);
 });
 
-// Endpoint de verificación del último envío automático
 app.get('/api/reporte-matutino', (req, res) => {
     res.json({
         sistema: "TAOS Fleet Management",
@@ -188,7 +187,6 @@ app.get('/api/reporte-matutino', (req, res) => {
     });
 });
 
-// Endpoint manual de prueba para disparar el reporte cuando lo desees
 app.get('/api/probar-envio', async (req, res) => {
     try {
         await ejecutarEnvioReporteMatutino();
