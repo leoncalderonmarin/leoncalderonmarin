@@ -4,6 +4,7 @@
   "description": "Sistema de Monitoreo Satelital y Automatización WhatsApp TAOS",
   "main": "server.js",
   "scripts": {
+    "postinstall": "npx puppeteer browsers install chrome",
     "start": "node server.js"
   },
   "dependencies": {
