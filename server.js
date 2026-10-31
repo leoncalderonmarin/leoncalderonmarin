@@ -49,10 +49,11 @@ function cargarDatos() {
         const crudo = JSON.parse(fs.readFileSync(ARCHIVO_DATOS, 'utf8'));
         return {
             grupos: (crudo.grupos && typeof crudo.grupos === 'object') ? crudo.grupos : {},
-            aviso: typeof crudo.aviso === 'string' ? crudo.aviso : ''
+            aviso: typeof crudo.aviso === 'string' ? crudo.aviso : '',
+            novedades: (crudo.novedades && typeof crudo.novedades === 'object') ? crudo.novedades : null
         };
     } catch (error) {
-        return { grupos: {}, aviso: '' };
+        return { grupos: {}, aviso: '', novedades: null };
     }
 }
 
@@ -107,7 +108,7 @@ function escaparHtml(valor) {
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function paginaGrupos(estado, destino, token) {
+function paginaGrupos(estado, destino, token, extra = {}) {
     const formato = (iso) => iso
         ? new Date(iso).toLocaleString('es-MX', { timeZone: 'America/Mexico_City', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true })
         : '—';
@@ -133,6 +134,15 @@ function paginaGrupos(estado, destino, token) {
                 <div class="id">${escaparHtml(g.id)}</div>
             </div>`).join('');
 
+    const nov = estado.novedades;
+    const novDeHoy = nov && nov.fecha === extra.hoy;
+    const estadoNov = extra.generando
+        ? 'Buscando novedades ahora… recarga esta página en un minuto.'
+        : novDeHoy
+            ? `Generadas ${formato(nov.generado)}${nov.editado ? ' · corregidas por ti' : ''}.`
+            : 'Todavía no se generan hoy (se generan solas a las 5:20 a. m.).';
+    const errorNov = extra.error ? `<div class="dato" style="color:#b91c1c">Último error de la búsqueda: ${escaparHtml(extra.error)}</div>` : '';
+
     return `<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Grupos · TAOS</title>
@@ -149,9 +159,22 @@ function paginaGrupos(estado, destino, token) {
 <h2>Grupos de WhatsApp detectados</h2>
 <p class="nota">Un grupo aparece cuando alguien escribe en él. Ponle un nombre para reconocerlo; el nombre es solo para ti y no cambia nada en WhatsApp. El destino del reporte se define en Render con la variable WHATSAPP_REPORTE_DESTINO.</p>
 <div class="aviso">
+  <form method="post" action="/novedades/guardar">
+    <input type="hidden" name="token" value="${escaparHtml(token)}">
+    <label><b>Novedades automáticas de hoy.</b> ${escaparHtml(estadoNov)} Puedes corregirlas o borrar líneas antes de las 5:30 a. m.; si dejas el cuadro vacío, el reporte dirá que no hubo novedades.</label>
+    <textarea name="novedades" rows="9" maxlength="2500">${escaparHtml(novDeHoy ? nov.texto : '')}</textarea>
+    <button type="submit">Guardar novedades</button>
+  </form>
+  <form method="post" action="/novedades/regenerar">
+    <input type="hidden" name="token" value="${escaparHtml(token)}">
+    <button type="submit" style="background:#475569">Buscar de nuevo ahora</button>
+  </form>
+  ${errorNov}
+</div>
+<div class="aviso">
   <form method="post" action="/grupos/aviso">
     <input type="hidden" name="token" value="${escaparHtml(token)}">
-    <label><b>Aviso especial para el próximo reporte (opcional):</b> marchas, cierres, obras u otra información confirmada. Se incluye una sola vez y luego se borra.</label>
+    <label><b>Aviso manual (opcional):</b> información confirmada por ti que se suma al reporte. Se envía una sola vez y luego se borra. No necesitas poner título.</label>
     <textarea name="aviso" rows="4" maxlength="600">${escaparHtml(estado.aviso)}</textarea>
     <button type="submit">Guardar aviso</button>
   </form>
@@ -295,41 +318,157 @@ client.initialize().catch((error) => {
 });
 
 // ---------------------------------------------------------------------------
-// Reporte matutino
+// Reporte matutino: solo novedades del día (búsqueda web con IA) + aviso manual
 // ---------------------------------------------------------------------------
 
 // === REPORTE:INICIO ===
 const ZONA_HORARIA = 'America/Mexico_City';
-
-// Enlaces que el equipo consulta antes de salir (fuentes en vivo; el bot no inventa condiciones de tránsito).
 const LINK_AGENDA_MARCHAS = 'https://www.ssc.cdmx.gob.mx/ciudadania/agenda-de-movilizaciones-sociales';
-const LINK_GOOGLE_TRAFICO = 'https://www.google.com/maps/@19.4326,-99.1332,11z/data=!5m1!1e1';
-const LINK_WAZE = 'https://www.waze.com/en/livemap';
 
-function construirReporte(ahora = new Date(), aviso = '') {
-    const fecha = ahora.toLocaleDateString('es-MX', { timeZone: ZONA_HORARIA, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    const hora = ahora.toLocaleTimeString('es-MX', { timeZone: ZONA_HORARIA, hour: 'numeric', minute: '2-digit', hour12: true });
+// Clave de la API de Anthropic (se define en Render; nunca se escribe en el código).
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const MODELO_IA = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5';
 
-    let texto = `🚨 *REPORTE DE TRÁFICO · CDMX*\n` +
-                `📅 ${fecha} · ${hora}\n\n` +
-                `Buenos días, equipo TAOS 👋\n` +
-                `Antes de salir, revisen el estado de las vialidades.\n\n`;
+let generandoNovedades = false;
+let ultimoErrorNovedades = '';
 
-    if (aviso && aviso.trim()) {
-        texto += `⚠️ *AVISOS DEL DÍA*\n${aviso.trim()}\n\n`;
+function claveDeFecha(ahora = new Date()) {
+    return ahora.toLocaleDateString('en-CA', { timeZone: ZONA_HORARIA }); // AAAA-MM-DD
+}
+
+function fechaLarga(ahora = new Date()) {
+    return ahora.toLocaleDateString('es-MX', { timeZone: ZONA_HORARIA, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+const INSTRUCCIONES_IA = [
+    'Eres el analista de movilidad de una empresa de transporte ejecutivo y turístico en la Ciudad de México.',
+    'Con la búsqueda web, identifica ÚNICAMENTE las novedades de HOY que afecten la circulación en la Ciudad de México y su zona conurbada:',
+    'marchas, manifestaciones, bloqueos, eventos masivos (desfiles, conciertos, partidos, maratones), cierres viales totales o parciales,',
+    'obras o mantenimiento con cierres, e incidentes que afecten vialidades principales o el acceso al AICM.',
+    '',
+    'Reglas:',
+    '1. Usa solo información publicada hoy, o el día anterior si se refiere a hoy, de fuentes reconocibles (Gobierno de la CDMX, SSC, C5, SEMOVI, Metrobús, medios nacionales). Si dos fuentes difieren, indica lo más conservador y menciona la discrepancia en pocas palabras.',
+    '2. No inventes ni completes datos. Si algo no está confirmado en una fuente, omítelo. No incluyas generalidades como "tráfico habitual" o "flujo normal".',
+    '3. Prioriza lo que afecte: Santa Fe–AICM, Periférico, Circuito Interior, Viaducto, Mariano Escobedo, Constituyentes, Reforma, Centro Histórico y accesos al AICM.',
+    '4. Responde SOLO con viñetas, una por novedad, cada una iniciando con "• ". Cada viñeta: qué ocurre, dónde (calles), horario si se conoce y qué evitar o qué vía alterna sugiere la fuente; máximo 45 palabras. Al final de cada viñeta, entre paréntesis, el nombre de la institución o medio fuente. Máximo 8 viñetas, de mayor a menor impacto vial.',
+    '5. No incluyas saludos, introducciones, títulos, comentarios ni enlaces. No escribas nada antes de buscar.',
+    '6. Si no encuentras ninguna novedad confirmada para hoy, responde exactamente: SIN_NOVEDADES'
+].join('\n');
+
+// El texto final es lo que viene después de la última búsqueda (lo anterior son avisos intermedios)
+function extraerTextoFinal(contenido) {
+    if (!Array.isArray(contenido)) return '';
+    let inicio = 0;
+    contenido.forEach((bloque, i) => {
+        if (bloque.type === 'web_search_tool_result' || bloque.type === 'server_tool_use') inicio = i + 1;
+    });
+    return contenido.slice(inicio)
+        .filter(b => b.type === 'text' && typeof b.text === 'string')
+        .map(b => b.text)
+        .join('');
+}
+
+// Devuelve el texto en viñetas, o '' si no hubo novedades. Si el formato no es el esperado, falla
+// (es preferible no enviar nada al grupo que enviar algo mal armado).
+function normalizarNovedades(texto) {
+    const limpio = String(texto || '').trim();
+    if (!limpio) throw new Error('La búsqueda no devolvió texto.');
+    if (/^SIN_NOVEDADES\.?$/i.test(limpio)) return '';
+
+    const viñetas = limpio.split('\n')
+        .map(l => l.trim())
+        .filter(l => /^[•\-*]\s+/.test(l))
+        .map(l => '• ' + l.replace(/^[•\-*]\s+/, '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim())
+        .filter(l => l.length > 3);
+
+    if (viñetas.length === 0) throw new Error('La búsqueda no devolvió el formato esperado.');
+
+    // Se limita el largo total para que el mensaje siga siendo breve
+    const salida = [];
+    let total = 0;
+    for (const v of viñetas.slice(0, 8)) {
+        if (total + v.length > 1800) break;
+        salida.push(v);
+        total += v.length + 1;
+    }
+    return salida.join('\n');
+}
+
+async function consultarNovedades(ahora = new Date()) {
+    if (!ANTHROPIC_API_KEY) {
+        throw new Error('Falta la variable ANTHROPIC_API_KEY en Render.');
     }
 
-    texto += `📍 *Corredores clave a vigilar*\n` +
-             `• Santa Fe ⇄ AICM\n` +
-             `• Periférico\n` +
-             `• Circuito Interior\n` +
-             `• Mariano Escobedo\n\n` +
-             `🔎 *Consulten antes de salir*\n` +
-             `🪧 Marchas y movilizaciones (SSC):\n${LINK_AGENDA_MARCHAS}\n` +
-             `🗺️ Tráfico en vivo (Google Maps):\n${LINK_GOOGLE_TRAFICO}\n` +
-             `🚗 Waze en vivo:\n${LINK_WAZE}\n\n` +
-             `⏱️ Salgan con margen y avisen al grupo de cualquier incidente en ruta. ¡Buena jornada! 👍🏼`;
+    const mensajes = [{ role: 'user', content: `Hoy es ${fechaLarga(ahora)}. Reporta las novedades viales de hoy en la Ciudad de México.` }];
+    let ultima = null;
 
+    // Si la búsqueda se pausa a medias (pause_turn), se continúa hasta 3 veces más
+    for (let intento = 0; intento < 4; intento++) {
+        const respuesta = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'x-api-key': ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+                model: MODELO_IA,
+                max_tokens: 1500,
+                system: INSTRUCCIONES_IA,
+                messages: mensajes,
+                tools: [{
+                    type: 'web_search_20250305',
+                    name: 'web_search',
+                    max_uses: 5,
+                    user_location: { type: 'approximate', city: 'Ciudad de México', region: 'Ciudad de México', country: 'MX', timezone: ZONA_HORARIA }
+                }]
+            }),
+            signal: AbortSignal.timeout(150000)
+        });
+
+        const cuerpo = await respuesta.json().catch(() => ({}));
+        if (!respuesta.ok) {
+            const motivo = (cuerpo && cuerpo.error && cuerpo.error.message) || '';
+            throw new Error(`Anthropic respondió ${respuesta.status}: ${String(motivo).slice(0, 200)}`);
+        }
+
+        ultima = cuerpo;
+        if (cuerpo.stop_reason !== 'pause_turn') break;
+        mensajes.push({ role: 'assistant', content: cuerpo.content });
+    }
+
+    return normalizarNovedades(extraerTextoFinal(ultima && ultima.content));
+}
+
+// Genera (o reutiliza) las novedades de hoy y las guarda en el disco.
+async function prepararNovedades(forzar = false) {
+    const hoy = claveDeFecha();
+    if (!forzar && datos.novedades && datos.novedades.fecha === hoy) return datos.novedades;
+
+    const texto = await consultarNovedades();
+    datos.novedades = { fecha: hoy, texto, generado: new Date().toISOString(), editado: false };
+    ultimoErrorNovedades = '';
+    guardarDatos(true);
+    return datos.novedades;
+}
+
+// novedades: texto (puede ser '' = sin novedades) o null si no se pudieron obtener.
+function construirReporte(ahora = new Date(), opciones = {}) {
+    const novedades = opciones.novedades === undefined ? null : opciones.novedades;
+    const aviso = (opciones.aviso || '').trim();
+
+    let texto = `🚨 *REPORTE DE TRÁFICO · CDMX*\n` +
+                `📅 ${fechaLarga(ahora)}\n\n`;
+
+    if (novedades !== null) {
+        texto += `📢 *Eventos masivos, marchas y cierres*\n` +
+                 `${(novedades || '').trim() || '• Sin novedades viales reportadas en las fuentes consultadas.'}\n\n`;
+    }
+    if (aviso) {
+        texto += `📝 *Avisos adicionales*\n${aviso}\n\n`;
+    }
+
+    texto += `🪧 Agenda oficial de movilizaciones (SSC):\n${LINK_AGENDA_MARCHAS}`;
     return texto;
 }
 // === REPORTE:FIN ===
@@ -367,19 +506,19 @@ async function resolverDestino(destino) {
     throw new Error(`El número ${destino} no aparece registrado en WhatsApp (se probaron las variantes con y sin "1" después del 52).`);
 }
 
-// Si el envío al grupo falla, el aviso llega SOLO a tu número, nunca al grupo.
-async function avisarFalla(motivo) {
+// Mensajes privados para ti (nunca al grupo): borradores y avisos de falla.
+async function avisarAMi(texto) {
     try {
         const chatId = await resolverDestino(NUMERO_VINCULACION);
-        await client.sendMessage(chatId, `⚠️ El reporte de tráfico de hoy no se pudo enviar.\nMotivo: ${motivo}`);
+        await client.sendMessage(chatId, texto);
     } catch (error) {
-        console.error('❌ Tampoco se pudo avisar la falla a tu número:', error.message || error);
+        console.error('❌ No se pudo enviar el aviso privado a tu número:', error.message || error);
     }
 }
 
 async function enviarReporteMatutino(origen, opciones = {}) {
     const soloYo = Boolean(opciones.soloYo);
-    console.log(`⏰ [${origen}] Generando reporte de tráfico para WhatsApp...`);
+    console.log(`⏰ [${origen}] Preparando reporte de tráfico para WhatsApp...`);
 
     if (!whatsappListo) {
         ultimoEnvio = { fecha: new Date().toISOString(), ok: false, detalle: 'WhatsApp no está conectado; el reporte no se envió.' };
@@ -387,12 +526,29 @@ async function enviarReporteMatutino(origen, opciones = {}) {
         return ultimoEnvio;
     }
 
+    let novedades = null;
+    let errorNovedades = '';
     try {
-        ultimoReporteMatutino = construirReporte(new Date(), datos.aviso);
+        novedades = (await prepararNovedades()).texto;
+    } catch (error) {
+        errorNovedades = error.message || String(error);
+        ultimoErrorNovedades = errorNovedades;
+        console.error('❌ No se pudieron obtener las novedades del día:', errorNovedades);
+    }
+
+    const aviso = datos.aviso || '';
+
+    try {
+        // Sin novedades confiables y sin aviso manual, no se manda nada al grupo
+        if (novedades === null && !aviso.trim()) {
+            throw new Error(`No se pudieron obtener las novedades del día (${errorNovedades}) y no hay aviso manual; no se envió nada al grupo.`);
+        }
+
+        ultimoReporteMatutino = construirReporte(new Date(), { novedades, aviso });
         const chatId = await resolverDestino(soloYo ? NUMERO_VINCULACION : DESTINO_REPORTE);
         await client.sendMessage(chatId, ultimoReporteMatutino);
 
-        // El aviso especial se usa una sola vez (no se borra en las pruebas enviadas solo a ti)
+        // El aviso manual se usa una sola vez (no se borra en las pruebas enviadas solo a ti)
         if (!soloYo && datos.aviso) {
             datos.aviso = '';
             guardarDatos(true);
@@ -400,15 +556,37 @@ async function enviarReporteMatutino(origen, opciones = {}) {
 
         ultimoEnvio = { fecha: new Date().toISOString(), ok: true, detalle: `Reporte enviado a ${chatId}` };
         console.log(`✅ ${ultimoEnvio.detalle}`);
+
+        if (errorNovedades) {
+            await avisarAMi(`⚠️ El reporte salió solo con tu aviso manual: falló la búsqueda automática.\nMotivo: ${errorNovedades}`);
+        }
     } catch (error) {
         const motivo = error.message || String(error);
         ultimoEnvio = { fecha: new Date().toISOString(), ok: false, detalle: motivo };
         console.error('❌ Error al enviar el reporte por WhatsApp:', error);
-        await avisarFalla(motivo);
+        await avisarAMi(`⚠️ El reporte de tráfico de hoy no se pudo enviar.\nMotivo: ${motivo}`);
     }
     return ultimoEnvio;
 }
 
+// 5:20 a. m.: se buscan las novedades y te llega un borrador privado para que lo revises.
+cron.schedule('20 5 * * *', async () => {
+    if (!whatsappListo) return;
+    try {
+        const nov = await prepararNovedades();
+        const borrador = construirReporte(new Date(), { novedades: nov.texto, aviso: datos.aviso });
+        const enlace = process.env.RENDER_EXTERNAL_URL ? `\nPara corregirlo antes de las 5:30, abre ${process.env.RENDER_EXTERNAL_URL}/grupos con tu clave.` : '';
+        await avisarAMi(`📝 *Borrador del reporte* (saldrá al grupo a las 5:30 a. m.)${enlace}\n\n${borrador}`);
+    } catch (error) {
+        ultimoErrorNovedades = error.message || String(error);
+        console.error('❌ No se pudieron preparar las novedades de las 5:20:', ultimoErrorNovedades);
+        await avisarAMi(`⚠️ No pude obtener las novedades automáticas de hoy.\nMotivo: ${ultimoErrorNovedades}\nSi quieres, escribe un aviso manual antes de las 5:30 a. m.`);
+    }
+}, {
+    timezone: ZONA_HORARIA
+});
+
+// 5:30 a. m.: envío al grupo.
 cron.schedule('30 5 * * *', () => {
     enviarReporteMatutino('AUTOMATIZACIÓN 5:30 A.M.');
 }, {
@@ -416,8 +594,8 @@ cron.schedule('30 5 * * *', () => {
 });
 
 // Páginas y pruebas de administración (requieren ADMIN_TOKEN en Render):
-//   /grupos?token=CLAVE                              -> lista de grupos detectados y avisos
-//   /api/reporte-vista-previa?token=CLAVE            -> muestra el texto del reporte SIN enviarlo
+//   /grupos?token=CLAVE                              -> grupos detectados, novedades de hoy y aviso manual
+//   /api/reporte-vista-previa?token=CLAVE            -> muestra el reporte SIN enviarlo
 //   /api/enviar-reporte-prueba?token=CLAVE&solo_yo=1 -> lo envía SOLO a tu número
 //   /api/enviar-reporte-prueba?token=CLAVE           -> lo envía al destino configurado (el grupo)
 function validarAdmin(req, res, token) {
@@ -432,9 +610,11 @@ function validarAdmin(req, res, token) {
     return true;
 }
 
+const volverAGrupos = (res, token) => res.redirect(303, `/grupos?token=${encodeURIComponent(token)}`);
+
 app.get('/grupos', (req, res) => {
     if (!validarAdmin(req, res, req.query.token)) return;
-    res.send(paginaGrupos(datos, DESTINO_REPORTE, req.query.token));
+    res.send(paginaGrupos(datos, DESTINO_REPORTE, req.query.token, { hoy: claveDeFecha(), generando: generandoNovedades, error: ultimoErrorNovedades }));
 });
 
 app.post('/grupos/nombre', (req, res) => {
@@ -444,7 +624,7 @@ app.post('/grupos/nombre', (req, res) => {
 
     datos.grupos[id].nombre = String(nombre || '').trim().slice(0, 80);
     guardarDatos(true);
-    res.redirect(303, `/grupos?token=${encodeURIComponent(token)}`);
+    volverAGrupos(res, token);
 });
 
 app.post('/grupos/aviso', (req, res) => {
@@ -453,12 +633,46 @@ app.post('/grupos/aviso', (req, res) => {
 
     datos.aviso = String(aviso || '').trim().slice(0, 600);
     guardarDatos(true);
-    res.redirect(303, `/grupos?token=${encodeURIComponent(token)}`);
+    volverAGrupos(res, token);
 });
 
-app.get('/api/reporte-vista-previa', (req, res) => {
+// Corrección manual de las novedades automáticas de hoy
+app.post('/novedades/guardar', (req, res) => {
+    const { token, novedades } = req.body || {};
+    if (!validarAdmin(req, res, token)) return;
+
+    datos.novedades = {
+        fecha: claveDeFecha(),
+        texto: String(novedades || '').trim().slice(0, 2500),
+        generado: (datos.novedades && datos.novedades.generado) || new Date().toISOString(),
+        editado: true
+    };
+    guardarDatos(true);
+    volverAGrupos(res, token);
+});
+
+// Nueva búsqueda: corre en segundo plano y la página se recarga cuando termina
+app.post('/novedades/regenerar', (req, res) => {
+    const { token } = req.body || {};
+    if (!validarAdmin(req, res, token)) return;
+
+    if (!generandoNovedades) {
+        generandoNovedades = true;
+        prepararNovedades(true)
+            .catch((error) => { ultimoErrorNovedades = error.message || String(error); })
+            .finally(() => { generandoNovedades = false; });
+    }
+    volverAGrupos(res, token);
+});
+
+app.get('/api/reporte-vista-previa', async (req, res) => {
     if (!validarAdmin(req, res, req.query.token)) return;
-    res.json({ status: 'success', reporte: construirReporte(new Date(), datos.aviso) });
+    try {
+        const nov = await prepararNovedades(req.query.actualizar === '1');
+        res.json({ status: 'success', reporte: construirReporte(new Date(), { novedades: nov.texto, aviso: datos.aviso }) });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.message || String(error), reporte_solo_con_aviso: construirReporte(new Date(), { novedades: null, aviso: datos.aviso }) });
+    }
 });
 
 app.get('/api/enviar-reporte-prueba', async (req, res) => {
