@@ -8,6 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 // Evita que un error no capturado tumbe todo el servicio (GPS, panel y cron)
 process.on('unhandledRejection', (reason) => {
@@ -15,7 +16,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 let unidadesGPS = {};
-let ultimoReporteMatutino = "Generando reporte matutino programado para las 5:30 A.M...";
+let ultimoReporteMatutino = "Aún no se ha generado el reporte de hoy.";
 let whatsappListo = false;
 let codigoVinculacion = "";
 
@@ -37,6 +38,128 @@ const TOKEN_ADMIN = process.env.ADMIN_TOKEN || '';
 // Carpeta donde se guarda la sesión de WhatsApp. En Render debe apuntar al disco persistente
 // (por ejemplo /var/data/wwebjs_auth) para que NO se pida un código nuevo en cada reinicio.
 const RUTA_SESION = process.env.WWEBJS_DATA_PATH || './.wwebjs_auth';
+
+// === REGISTRO:INICIO ===
+// Lista de grupos de WhatsApp detectados (se guarda en el disco persistente, junto a la sesión).
+// Cada grupo aparece cuando alguien escribe en él; en /grupos puedes ponerle tu propio nombre.
+const ARCHIVO_DATOS = path.join(RUTA_SESION, 'taos-datos.json');
+
+function cargarDatos() {
+    try {
+        const crudo = JSON.parse(fs.readFileSync(ARCHIVO_DATOS, 'utf8'));
+        return {
+            grupos: (crudo.grupos && typeof crudo.grupos === 'object') ? crudo.grupos : {},
+            aviso: typeof crudo.aviso === 'string' ? crudo.aviso : ''
+        };
+    } catch (error) {
+        return { grupos: {}, aviso: '' };
+    }
+}
+
+let datos = cargarDatos();
+let guardadoPendiente = null;
+
+function guardarDatos(inmediato = false) {
+    const escribir = () => {
+        guardadoPendiente = null;
+        try {
+            fs.mkdirSync(path.dirname(ARCHIVO_DATOS), { recursive: true });
+            const temporal = ARCHIVO_DATOS + '.tmp';
+            fs.writeFileSync(temporal, JSON.stringify(datos, null, 2), 'utf8');
+            fs.renameSync(temporal, ARCHIVO_DATOS);
+        } catch (error) {
+            console.warn('⚠️ No se pudo guardar la lista de grupos:', error.message);
+        }
+    };
+
+    if (inmediato) {
+        if (guardadoPendiente) clearTimeout(guardadoPendiente);
+        escribir();
+    } else if (!guardadoPendiente) {
+        guardadoPendiente = setTimeout(escribir, 5000);
+    }
+}
+
+// Devuelve true si el grupo se veía por primera vez.
+function registrarMensajeGrupo(idChat, msg) {
+    const ahora = new Date().toISOString();
+    const esNuevo = !datos.grupos[idChat];
+    const grupo = datos.grupos[idChat] || (datos.grupos[idChat] = {
+        id: idChat, nombre: '', nombreWhatsApp: '', primeraVez: ahora, mensajes: 0
+    });
+
+    const texto = (msg && typeof msg.body === 'string') ? msg.body.replace(/\s+/g, ' ').trim() : '';
+    const remitente = (msg && msg._data && typeof msg._data.notifyName === 'string') ? msg._data.notifyName : '';
+
+    grupo.ultimaVez = ahora;
+    grupo.mensajes = (grupo.mensajes || 0) + 1;
+    grupo.ultimoMensaje = texto ? texto.slice(0, 50) : `(${(msg && msg.type) || 'mensaje'})`;
+    grupo.ultimoRemitente = (msg && msg.fromMe) ? 'Tú' : remitente;
+
+    guardarDatos(esNuevo);
+    return esNuevo;
+}
+
+// El texto de los mensajes y los nombres vienen de WhatsApp: siempre se escapan antes de mostrarlos.
+function escaparHtml(valor) {
+    return String(valor == null ? '' : valor)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function paginaGrupos(estado, destino, token) {
+    const formato = (iso) => iso
+        ? new Date(iso).toLocaleString('es-MX', { timeZone: 'America/Mexico_City', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true })
+        : '—';
+
+    const grupos = Object.values(estado.grupos)
+        .sort((a, b) => String(b.ultimaVez || '').localeCompare(String(a.ultimaVez || '')));
+
+    const tarjetas = grupos.length === 0
+        ? '<p>Aún no se ha detectado ningún grupo. Escribe un mensaje en el grupo que quieres identificar y recarga esta página.</p>'
+        : grupos.map(g => `
+            <div class="grupo${g.id === destino ? ' destino' : ''}">
+                ${g.id === destino ? '<div class="etiqueta">⭐ DESTINO ACTUAL DEL REPORTE</div>' : ''}
+                <form method="post" action="/grupos/nombre">
+                    <input type="hidden" name="token" value="${escaparHtml(token)}">
+                    <input type="hidden" name="id" value="${escaparHtml(g.id)}">
+                    <label>Nombre que le pongo:</label>
+                    <input type="text" name="nombre" maxlength="80" value="${escaparHtml(g.nombre)}" placeholder="Ej. Taos Cab administración">
+                    <button type="submit">Guardar nombre</button>
+                </form>
+                ${g.nombreWhatsApp ? `<div class="dato">Nombre en WhatsApp: <b>${escaparHtml(g.nombreWhatsApp)}</b></div>` : ''}
+                <div class="dato">Último mensaje: ${escaparHtml(formato(g.ultimaVez))} · ${escaparHtml(g.mensajes || 0)} mensajes vistos</div>
+                <div class="dato">Dijo${g.ultimoRemitente ? ' ' + escaparHtml(g.ultimoRemitente) : ''}: “${escaparHtml(g.ultimoMensaje || '')}”</div>
+                <div class="id">${escaparHtml(g.id)}</div>
+            </div>`).join('');
+
+    return `<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grupos · TAOS</title>
+<style>
+ body{font-family:Arial,sans-serif;background:#f4f4f9;color:#222;padding:16px;max-width:640px;margin:0 auto}
+ h2{margin-top:0} .nota{color:#555;font-size:14px}
+ .grupo,.aviso{background:#fff;border:1px solid #ddd;border-radius:10px;padding:12px;margin:12px 0}
+ .destino{border:2px solid #16a34a;background:#f0fdf4} .etiqueta{font-weight:bold;color:#15803d;margin-bottom:6px}
+ label{display:block;font-size:13px;color:#555;margin-bottom:4px}
+ input[type=text],textarea{width:100%;box-sizing:border-box;padding:10px;font-size:16px;border:1px solid #bbb;border-radius:6px}
+ button{margin-top:8px;padding:10px 14px;font-size:15px;border:0;border-radius:6px;background:#1d4ed8;color:#fff}
+ .dato{font-size:13px;color:#444;margin-top:6px} .id{font-family:monospace;font-size:12px;color:#666;margin-top:8px;word-break:break-all}
+</style></head><body>
+<h2>Grupos de WhatsApp detectados</h2>
+<p class="nota">Un grupo aparece cuando alguien escribe en él. Ponle un nombre para reconocerlo; el nombre es solo para ti y no cambia nada en WhatsApp. El destino del reporte se define en Render con la variable WHATSAPP_REPORTE_DESTINO.</p>
+<div class="aviso">
+  <form method="post" action="/grupos/aviso">
+    <input type="hidden" name="token" value="${escaparHtml(token)}">
+    <label><b>Aviso especial para el próximo reporte (opcional):</b> marchas, cierres, obras u otra información confirmada. Se incluye una sola vez y luego se borra.</label>
+    <textarea name="aviso" rows="4" maxlength="600">${escaparHtml(estado.aviso)}</textarea>
+    <button type="submit">Guardar aviso</button>
+  </form>
+</div>
+${tarjetas}
+</body></html>`;
+}
+// === REGISTRO:FIN ===
 
 const client = new Client({
     authStrategy: new LocalAuth({
@@ -101,15 +224,32 @@ client.on('ready', async () => {
     }
 });
 
-// Alternativa a getChats() para descubrir el ID de un grupo: al escribir un mensaje en el grupo
-// (desde el celular vinculado o desde otro integrante), el ID aparece una sola vez en el log.
-const gruposDetectados = new Set();
+// Alternativa a getChats(): cada grupo donde se escribe un mensaje queda registrado en la lista
+// (consúltala y ponles nombre en /grupos). El nombre de WhatsApp se intenta leer una sola vez.
+async function intentarNombreAutomatico(idChat) {
+    try {
+        const chat = await Promise.race([
+            client.getChatById(idChat),
+            new Promise((_, rechazar) => setTimeout(() => rechazar(new Error('tiempo agotado')), 8000))
+        ]);
+        if (chat && chat.name && datos.grupos[idChat]) {
+            datos.grupos[idChat].nombreWhatsApp = chat.name;
+            guardarDatos(true);
+            console.log(`👥 Nombre del grupo ${idChat}: ${chat.name}`);
+        }
+    } catch (error) {
+        // Con algunas versiones de WhatsApp Web esta lectura falla; el nombre se puede poner a mano en /grupos
+    }
+}
+
 client.on('message_create', (msg) => {
     try {
         const idChat = msg.fromMe ? msg.to : msg.from;
-        if (typeof idChat === 'string' && idChat.endsWith('@g.us') && !gruposDetectados.has(idChat)) {
-            gruposDetectados.add(idChat);
-            console.log(`👥 GRUPO DETECTADO ---> ID: ${idChat}`);
+        if (typeof idChat === 'string' && idChat.endsWith('@g.us')) {
+            if (registrarMensajeGrupo(idChat, msg)) {
+                console.log(`👥 GRUPO NUEVO DETECTADO ---> ID: ${idChat}`);
+                intentarNombreAutomatico(idChat);
+            }
         }
     } catch (error) {
         console.warn('⚠️ No se pudo leer el ID del chat:', error.message);
@@ -158,17 +298,41 @@ client.initialize().catch((error) => {
 // Reporte matutino
 // ---------------------------------------------------------------------------
 
-function construirReporte() {
-    const fechaHoy = new Date().toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
+// === REPORTE:INICIO ===
+const ZONA_HORARIA = 'America/Mexico_City';
 
-    return `🚨 Reporte de Tráfico y Marchas CDMX - ${fechaHoy} \n\n` +
-        `Buenos días equipo TAOS. Iniciamos monitoreo proactivo de vialidad a las 5:30 A.M.\n\n` +
-        `🛣️ Rutas críticas hacia AICM y corporativos listas:\n` +
-        `- Paseo de la Reforma y Circuito Interior con carga habitual.\n` +
-        `- Viaducto y Periférico con asentamientos moderados por incorporación.\n` +
-        `- Eje Central y Constituyentes operando con normalidad.\n\n` +
-        `Favor de revisar unidades asignadas y reportar check-in a tiempo. 👍🏼`;
+// Enlaces que el equipo consulta antes de salir (fuentes en vivo; el bot no inventa condiciones de tránsito).
+const LINK_AGENDA_MARCHAS = 'https://www.ssc.cdmx.gob.mx/ciudadania/agenda-de-movilizaciones-sociales';
+const LINK_GOOGLE_TRAFICO = 'https://www.google.com/maps/@19.4326,-99.1332,11z/data=!5m1!1e1';
+const LINK_WAZE = 'https://www.waze.com/en/livemap';
+
+function construirReporte(ahora = new Date(), aviso = '') {
+    const fecha = ahora.toLocaleDateString('es-MX', { timeZone: ZONA_HORARIA, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const hora = ahora.toLocaleTimeString('es-MX', { timeZone: ZONA_HORARIA, hour: 'numeric', minute: '2-digit', hour12: true });
+
+    let texto = `🚨 *REPORTE DE TRÁFICO · CDMX*\n` +
+                `📅 ${fecha} · ${hora}\n\n` +
+                `Buenos días, equipo TAOS 👋\n` +
+                `Antes de salir, revisen el estado de las vialidades.\n\n`;
+
+    if (aviso && aviso.trim()) {
+        texto += `⚠️ *AVISOS DEL DÍA*\n${aviso.trim()}\n\n`;
+    }
+
+    texto += `📍 *Corredores clave a vigilar*\n` +
+             `• Santa Fe ⇄ AICM\n` +
+             `• Periférico\n` +
+             `• Circuito Interior\n` +
+             `• Mariano Escobedo\n\n` +
+             `🔎 *Consulten antes de salir*\n` +
+             `🪧 Marchas y movilizaciones (SSC):\n${LINK_AGENDA_MARCHAS}\n` +
+             `🗺️ Tráfico en vivo (Google Maps):\n${LINK_GOOGLE_TRAFICO}\n` +
+             `🚗 Waze en vivo:\n${LINK_WAZE}\n\n` +
+             `⏱️ Salgan con margen y avisen al grupo de cualquier incidente en ruta. ¡Buena jornada! 👍🏼`;
+
+    return texto;
 }
+// === REPORTE:FIN ===
 
 // Algunas versiones de la librería devuelven el ID sin la propiedad _serialized;
 // en ese caso se reconstruye con usuario y servidor.
@@ -203,24 +367,44 @@ async function resolverDestino(destino) {
     throw new Error(`El número ${destino} no aparece registrado en WhatsApp (se probaron las variantes con y sin "1" después del 52).`);
 }
 
-async function enviarReporteMatutino(origen) {
-    ultimoReporteMatutino = construirReporte();
-    console.log(`⏰ [${origen}] Generando reporte matutino para WhatsApp...`);
+// Si el envío al grupo falla, el aviso llega SOLO a tu número, nunca al grupo.
+async function avisarFalla(motivo) {
+    try {
+        const chatId = await resolverDestino(NUMERO_VINCULACION);
+        await client.sendMessage(chatId, `⚠️ El reporte de tráfico de hoy no se pudo enviar.\nMotivo: ${motivo}`);
+    } catch (error) {
+        console.error('❌ Tampoco se pudo avisar la falla a tu número:', error.message || error);
+    }
+}
+
+async function enviarReporteMatutino(origen, opciones = {}) {
+    const soloYo = Boolean(opciones.soloYo);
+    console.log(`⏰ [${origen}] Generando reporte de tráfico para WhatsApp...`);
 
     if (!whatsappListo) {
-        ultimoEnvio = { fecha: new Date().toISOString(), ok: false, detalle: 'WhatsApp no está conectado; el reporte se generó pero no se envió.' };
+        ultimoEnvio = { fecha: new Date().toISOString(), ok: false, detalle: 'WhatsApp no está conectado; el reporte no se envió.' };
         console.warn(`⚠️ ${ultimoEnvio.detalle}`);
         return ultimoEnvio;
     }
 
     try {
-        const chatId = await resolverDestino(DESTINO_REPORTE);
+        ultimoReporteMatutino = construirReporte(new Date(), datos.aviso);
+        const chatId = await resolverDestino(soloYo ? NUMERO_VINCULACION : DESTINO_REPORTE);
         await client.sendMessage(chatId, ultimoReporteMatutino);
+
+        // El aviso especial se usa una sola vez (no se borra en las pruebas enviadas solo a ti)
+        if (!soloYo && datos.aviso) {
+            datos.aviso = '';
+            guardarDatos(true);
+        }
+
         ultimoEnvio = { fecha: new Date().toISOString(), ok: true, detalle: `Reporte enviado a ${chatId}` };
         console.log(`✅ ${ultimoEnvio.detalle}`);
     } catch (error) {
-        ultimoEnvio = { fecha: new Date().toISOString(), ok: false, detalle: error.message || String(error) };
+        const motivo = error.message || String(error);
+        ultimoEnvio = { fecha: new Date().toISOString(), ok: false, detalle: motivo };
         console.error('❌ Error al enviar el reporte por WhatsApp:', error);
+        await avisarFalla(motivo);
     }
     return ultimoEnvio;
 }
@@ -228,20 +412,58 @@ async function enviarReporteMatutino(origen) {
 cron.schedule('30 5 * * *', () => {
     enviarReporteMatutino('AUTOMATIZACIÓN 5:30 A.M.');
 }, {
-    timezone: "America/Mexico_City"
+    timezone: ZONA_HORARIA
 });
 
-// Prueba manual: abre en el navegador  https://TU-SERVICIO.onrender.com/api/enviar-reporte-prueba?token=TU_ADMIN_TOKEN
-// Requiere definir ADMIN_TOKEN en Render. Quita esa variable cuando termines las pruebas.
-app.get('/api/enviar-reporte-prueba', async (req, res) => {
+// Páginas y pruebas de administración (requieren ADMIN_TOKEN en Render):
+//   /grupos?token=CLAVE                              -> lista de grupos detectados y avisos
+//   /api/reporte-vista-previa?token=CLAVE            -> muestra el texto del reporte SIN enviarlo
+//   /api/enviar-reporte-prueba?token=CLAVE&solo_yo=1 -> lo envía SOLO a tu número
+//   /api/enviar-reporte-prueba?token=CLAVE           -> lo envía al destino configurado (el grupo)
+function validarAdmin(req, res, token) {
     if (!TOKEN_ADMIN) {
-        return res.status(503).json({ status: 'error', message: 'Prueba deshabilitada: define la variable ADMIN_TOKEN en Render.' });
+        res.status(503).send('Deshabilitado: define la variable ADMIN_TOKEN en Render.');
+        return false;
     }
-    if (req.query.token !== TOKEN_ADMIN) {
-        return res.status(401).json({ status: 'error', message: 'Token incorrecto.' });
+    if (token !== TOKEN_ADMIN) {
+        res.status(401).send('Token incorrecto.');
+        return false;
     }
+    return true;
+}
 
-    const resultado = await enviarReporteMatutino('PRUEBA MANUAL');
+app.get('/grupos', (req, res) => {
+    if (!validarAdmin(req, res, req.query.token)) return;
+    res.send(paginaGrupos(datos, DESTINO_REPORTE, req.query.token));
+});
+
+app.post('/grupos/nombre', (req, res) => {
+    const { token, id, nombre } = req.body || {};
+    if (!validarAdmin(req, res, token)) return;
+    if (!datos.grupos[id]) return res.status(404).send('Grupo no encontrado.');
+
+    datos.grupos[id].nombre = String(nombre || '').trim().slice(0, 80);
+    guardarDatos(true);
+    res.redirect(303, `/grupos?token=${encodeURIComponent(token)}`);
+});
+
+app.post('/grupos/aviso', (req, res) => {
+    const { token, aviso } = req.body || {};
+    if (!validarAdmin(req, res, token)) return;
+
+    datos.aviso = String(aviso || '').trim().slice(0, 600);
+    guardarDatos(true);
+    res.redirect(303, `/grupos?token=${encodeURIComponent(token)}`);
+});
+
+app.get('/api/reporte-vista-previa', (req, res) => {
+    if (!validarAdmin(req, res, req.query.token)) return;
+    res.json({ status: 'success', reporte: construirReporte(new Date(), datos.aviso) });
+});
+
+app.get('/api/enviar-reporte-prueba', async (req, res) => {
+    if (!validarAdmin(req, res, req.query.token)) return;
+    const resultado = await enviarReporteMatutino('PRUEBA MANUAL', { soloYo: req.query.solo_yo === '1' });
     res.status(resultado.ok ? 200 : 500).json(resultado);
 });
 
@@ -334,4 +556,4 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`Servidor TAOS corriendo con éxito en el puerto ${PORT}`);
-});
+});p
