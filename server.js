@@ -48,7 +48,13 @@ client.on('ready', () => {
 
 client.on('auth_failure', (msg) => {
     clientReady = false;
-    ultimaConexionStatus = `Falla de autenticación: ${msg}`; console.error('Error de autenticación en WhatsApp:', msg); });  client.on('disconnected', (reason) => { clientReady = false; ultimaConexionStatus = `Desconectado: ${reason}`;
+    ultimaConexionStatus = `Falla de autenticación: ${msg}`;
+    console.error('Error de autenticación en WhatsApp:', msg);
+});
+
+client.on('disconnected', (reason) => {
+    clientReady = false;
+    ultimaConexionStatus = `Desconectado: ${reason}`;
     console.log('WhatsApp desconectado:', reason);
 });
 
@@ -57,7 +63,7 @@ client.on('message', async (msg) => {
     try {
         const chat = await msg.getChat();
         if (chat.isGroup) {
-            console.log(`[GRUPO DETECTADO] Nombre: ${chat.name} \vert{} ID:${chat.id._serialized}`);
+            console.log(`[GRUPO DETECTADO] Nombre: ${chat.name} | ID: ${chat.id._serialized}`);
         }
     } catch (e) {
         // Ignorar errores menores de lectura
@@ -132,4 +138,86 @@ app.get('/', async (req, res) => {
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
                 body { font-family: Arial, sans-serif; background: #121212; color: #e0e0e0; text-align: center; padding: 20px; }
-                .card { background: #1e1e1e; padding: 20px; border-radius: 10px; max-width: 500px; margin: 0 auto; box-shadow: 0 4px
+                .card { background: #1e1e1e; padding: 20px; border-radius: 10px; max-width: 500px; margin: 0 auto; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+                .status-box { font-weight: bold; margin: 15px 0; padding: 10px; border-radius: 5px; }
+                .connected { background: #1b5e20; color: #a5d6a7; }
+                .disconnected { background: #b71c1c; color: #ffcdd2; }
+                img { max-width: 100%; height: auto; border-radius: 8px; background: white; padding: 10px; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h2>Monitoreo Satelital - TAOS</h2>
+                <div class="status-box ${clientReady ? 'connected' : 'disconnected'}">
+                    ${clientReady ? '🟢 Servidor activo · WhatsApp Conectado' : '🟡 Servidor activo · WhatsApp sin conectar'}
+                </div>
+                <p><strong>Estado:</strong> ${ultimaConexionStatus}</p>
+    `;
+
+    if (!clientReady && qrCodeData) {
+        try {
+            const qrImage = await qrcode.toDataURL(qrCodeData);
+            html += `
+                <p>Escanea este código QR con WhatsApp:</p>
+                <img src="${qrImage}" alt="QR WhatsApp"/>
+                <p><small>Actualiza la página si tarda en aparecer.</small></p>
+            `;
+        } catch (err) {
+            html += `<p>Generando código QR...</p>`;
+        }
+    } else if (clientReady) {
+        html += `<p>✅ El bot está vinculado y operando correctamente en segundo plano.</p>`;
+    }
+
+    html += `
+            </div>
+        </body>
+    </html>
+    `;
+    res.send(html);
+});
+
+// Endpoint clave para listar todos tus grupos de WhatsApp y sus IDs exactos
+app.get('/grupos', async (req, res) => {
+    const token = req.query.token;
+    if (token !== 'Leon2013') {
+        return res.status(403).json({ error: "Acceso no autorizado" });
+    }
+    
+    try {
+        if (!clientReady) {
+            return res.status(400).json({ error: "WhatsApp no está conectado todavía." });
+        }
+        const chats = await client.getChats();
+        const grupos = chats
+            .filter(chat => chat.isGroup)
+            .map(g => ({ nombre: g.name, id: g.id._serialized }));
+            
+        res.json({ total_grupos: grupos.length, grupos });
+    } catch (e) {
+        res.status(500).json({ error: "No se pudieron listar los chats: " + e.message });
+    }
+});
+
+app.get('/api/reporte-matutino', (req, res) => {
+    res.json({
+        sistema: "TAOS Fleet Management",
+        whatsapp_conectado: clientReady,
+        ultimo_envio: ultimoEnvioEstado,
+        timestamp_actual: new Date().toISOString()
+    });
+});
+
+app.get('/api/probar-envio', async (req, res) => {
+    try {
+        await ejecutarEnvioReporteMatutino();
+        res.json({ exito: true, mensaje: "Reporte de prueba ejecutado correctamente.", estado: ultimoEnvioEstado });
+    } catch (e) {
+        res.status(500).json({ exito: false, error: e.message });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`Servidor corriendo en el puerto ${PORT}`);
+});
