@@ -681,6 +681,27 @@ app.get('/api/enviar-reporte-prueba', async (req, res) => {
     res.status(resultado.ok ? 200 : 500).json(resultado);
 });
 
+// Envía un texto a un número, ID de chat o grupo (lo usa el módulo de flota para sus alertas)
+async function enviarTextoWhatsApp(destino, texto) {
+    const chatId = await resolverDestino(destino);
+    await client.sendMessage(chatId, texto);
+}
+
+// Módulo de control de flota: operadores, vehículos, semáforos, kilometraje, servicios y gastos (ver flota.js).
+// Tablero de solo lectura: /flota (clave VISOR_TOKEN o ADMIN_TOKEN) · Administración: /flota/admin (ADMIN_TOKEN)
+require('./flota')({
+    app,
+    cron,
+    zonaHoraria: ZONA_HORARIA,
+    tokenAdmin: TOKEN_ADMIN,
+    tokenVisor: process.env.VISOR_TOKEN || '',
+    rutaDatos: path.join(RUTA_SESION, 'taos-flota.json'),
+    whatsappListo: () => whatsappListo,
+    enviarTexto: enviarTextoWhatsApp,
+    destinoAlertas: process.env.FLOTA_ALERTAS_DESTINO || NUMERO_VINCULACION,
+    urlPublica: process.env.RENDER_EXTERNAL_URL || ''
+});
+
 app.post('/api/gps', (req, res) => {
     const { device, latitude, longitude, timestamp } = req.body;
 
